@@ -46,6 +46,8 @@ typedef GDBSTUBCTX *PGDBSTUBCTX;
 #define GDBSTUB_ERR_NO_MEMORY         (-2)
 /** Informational status code - no data available */
 #define GDBSTUB_INF_TRY_AGAIN         (3)
+/** Error code - internal error (bug in the library). */
+#define GDBSTUB_ERR_INTERNAL_ERROR    (-4)
 
 
 /**
@@ -138,6 +140,15 @@ typedef const GDBSTUBIF *PCGDBSTUBIF;
  */
 typedef struct GDBSTUBIOIF
 {
+    /** 
+     * Returns amount of data available for reading (for optimized buffer allocations).
+     *
+     * @returns Amount of bytes available for reading.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the callback.
+     * @param   pvUser              Opaque user data passed during creation of the stub context.
+     */
+    size_t (*pfnPeek) (GDBSTUBCTX hGdbStubCtx, void *pvUser);
+
     /**
      * Read data from the underlying transport layer - non blocking.
      *
@@ -208,5 +219,13 @@ void GDBStubCtxDestroy(GDBSTUBCTX hCtx);
  * @param   hCtx                    The GDB stub context handle.
  */
 int GDBStubCtxRun(GDBSTUBCTX hCtx);
+
+/**
+ * Resets the given GDB stub context to an initial state without freeing allocated scratch buffers.
+ *
+ * @returns Status code.
+ * @param   hCtx                    The GDB stub context handle.
+ */
+int GDBStubCtxReset(GDBSTUBCTX hCtx);
 
 #endif /* __libgdbstub_h */
