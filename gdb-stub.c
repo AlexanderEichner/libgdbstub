@@ -90,7 +90,7 @@ typedef GDBSTUBCTXINT *PGDBSTUBCTXINT;
  * @param   pThis               The GDB stub context.
  * @param   cbAlloc             Number of bytes to allocate.
  */
-inline void *gdbStubCtxIfMemAlloc(PGDBSTUBCTXINT pThis, size_t cbAlloc)
+static inline void *gdbStubCtxIfMemAlloc(PGDBSTUBCTXINT pThis, size_t cbAlloc)
 {
     return pThis->pIf->pfnMemAlloc(pThis, pThis->pvUser, cbAlloc);
 }
@@ -103,7 +103,7 @@ inline void *gdbStubCtxIfMemAlloc(PGDBSTUBCTXINT pThis, size_t cbAlloc)
  * @param   pThis               The GDB stub context.
  * @param   pv                  The pointer to free.
  */
-inline void gdbStubCtxIfMemFree(PGDBSTUBCTXINT pThis, void *pv)
+static inline void gdbStubCtxIfMemFree(PGDBSTUBCTXINT pThis, void *pv)
 {
     return pThis->pIf->pfnMemFree(pThis, pThis->pvUser, pv);
 }
@@ -115,7 +115,7 @@ inline void gdbStubCtxIfMemFree(PGDBSTUBCTXINT pThis, void *pv)
  * @returns Number of bytes available for reading.
  * @param   pThis               The GDB stub context.
  */
-inline size_t gdbStubCtxIoIfPeek(PGDBSTUBCTXINT pThis)
+static inline size_t gdbStubCtxIoIfPeek(PGDBSTUBCTXINT pThis)
 {
     return pThis->pIoIf->pfnPeek(pThis, pThis->pvUser);
 }
@@ -130,7 +130,7 @@ inline size_t gdbStubCtxIoIfPeek(PGDBSTUBCTXINT pThis)
  * @param   cbRead              How much to read.
  * @param   pcbRead             Where to store the number of bytes read on success.
  */
-inline int gdbStubCtxIoIfRead(PGDBSTUBCTXINT pThis, void *pvDst, size_t cbRead, size_t *pcbRead)
+static inline int gdbStubCtxIoIfRead(PGDBSTUBCTXINT pThis, void *pvDst, size_t cbRead, size_t *pcbRead)
 {
     return pThis->pIoIf->pfnRead(pThis, pThis->pvUser, pvDst, cbRead, pcbRead);
 }
@@ -144,7 +144,7 @@ inline int gdbStubCtxIoIfRead(PGDBSTUBCTXINT pThis, void *pvDst, size_t cbRead, 
  * @param   pvPkt               The packet data to send.
  * @param   cbPkt               Size of the packet in bytes.
  */
-inline int gdbStubCtxIoIfWrite(PGDBSTUBCTXINT pThis, const void *pvPkt, size_t cbPkt)
+static inline int gdbStubCtxIoIfWrite(PGDBSTUBCTXINT pThis, const void *pvPkt, size_t cbPkt)
 {
     return pThis->pIoIf->pfnWrite(pThis, pThis->pvUser, pvPkt, cbPkt);
 }
@@ -156,9 +156,9 @@ inline int gdbStubCtxIoIfWrite(PGDBSTUBCTXINT pThis, const void *pvPkt, size_t c
  * @returns Status code.
  * @param   pThis               The GDB stub context.
  */
-inline size_t gdbStubCtxIoIfPoll(PGDBSTUBCTXINT pThis)
+static inline size_t gdbStubCtxIoIfPoll(PGDBSTUBCTXINT pThis)
 {
-    return pThis->pIoIf->pfnPeek(pThis, pThis->pvUser);
+    return pThis->pIoIf->pfnPoll(pThis, pThis->pvUser);
 }
 
 
@@ -190,14 +190,14 @@ static void *gdbStubCtxMemcpy(void *pvDst, const void *pvSrc, size_t cb)
  * @returns The hexadecimal value the given character represents 0-9,a-f,A-F or 0xff on error.
  * @param   ch                  The character to convert.
  */
-inline uint8_t gdbStubCtxChrToHex(char ch)
+static inline uint8_t gdbStubCtxChrToHex(char ch)
 {
     if (ch >= '0' && ch <= '9')
         return ch - '0';
     if (ch >= 'A' && ch <= 'F')
-        return ch - 'A';
+        return ch - 'A' + 0xa;
     if (ch >= 'a' && ch <= 'f')
-        return ch - 'a';
+        return ch - 'a' + 0xa;
 
     return 0xff;
 }
@@ -379,9 +379,9 @@ static int gdbStubCtxPktBufSearchEnd(PGDBSTUBCTXINT pThis, size_t cbData, size_t
             /* Found the end character, next comes the checksum. */
             pThis->enmState = GDBSTUBRECVSTATE_PACKET_RECEIVE_CHECKSUM;
         }
-        *pcbProcessed     = (uintptr_t)(pbEnd - &pThis->pbPktBuf[pThis->offPktBuf]);
+        *pcbProcessed     = (uintptr_t)(pbEnd - &pThis->pbPktBuf[pThis->offPktBuf]) + 1;
         pThis->offPktBuf += *pcbProcessed;
-        pThis->cbPkt      = pThis->offPktBuf - 1 - 1; /* Don't account for the start and end character. */
+        pThis->cbPkt      = pThis->offPktBuf - 1; /* Don't account for the start and end character. */
     }
     else
     {
@@ -412,8 +412,8 @@ static int gdbStubCtxPktBufProcessChksum(PGDBSTUBCTXINT pThis, size_t cbData, si
     if (!pThis->cbChksumRecvLeft)
     {
         /* Verify checksum of the whole packet. */
-        uint8_t uChkSum =   gdbStubCtxChrToHex(pThis->pbPktBuf[pThis->offPktBuf - 2]) << 4
-                          | gdbStubCtxChrToHex(pThis->pbPktBuf[pThis->offPktBuf - 1]);
+        uint8_t uChkSum =   gdbStubCtxChrToHex(pThis->pbPktBuf[pThis->offPktBuf]) << 4
+                          | gdbStubCtxChrToHex(pThis->pbPktBuf[pThis->offPktBuf + 1]);
 
         uint8_t uSum = 0;
         for (uint32_t i = 1; i < pThis->cbPkt; i++)
@@ -555,8 +555,8 @@ void GDBStubCtxDestroy(GDBSTUBCTX hCtx)
     PCGDBSTUBIF pIf = pThis->pIf;
     void *pvUser = pThis->pvUser;
 
-    /** @todo Destroy all allocated resources. */
-
+    if (pThis->pbPktBuf)
+        pIf->pfnMemFree(pThis, pvUser, pThis->pbPktBuf);
     pIf->pfnMemFree(NULL, pvUser, pThis);
 }
 

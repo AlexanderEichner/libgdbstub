@@ -48,6 +48,8 @@ typedef GDBSTUBCTX *PGDBSTUBCTX;
 #define GDBSTUB_INF_TRY_AGAIN         (3)
 /** Error code - internal error (bug in the library). */
 #define GDBSTUB_ERR_INTERNAL_ERROR    (-4)
+/** Error code - internal error (bug in the library). */
+#define GDBSTUB_ERR_PEER_DISCONNECTED (-5)
 
 
 /**
