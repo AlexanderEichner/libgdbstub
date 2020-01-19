@@ -167,7 +167,12 @@ static int gdbStubIfTgtRegsRead(GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *
     uint32_t *pau32Regs = (uint32_t *)pvDst;
 
     for (uint32_t i = 0; i < cRegs; i++)
-        *pau32Regs++ = paRegs[i];
+    {
+        if (paRegs[i] == 0x19)
+            *pau32Regs++ = 0xdeadbeef; /* XXX To get CPSR */
+        else
+            *pau32Regs++ = paRegs[i];
+    }
 
     return GDBSTUB_INF_SUCCESS;
 }

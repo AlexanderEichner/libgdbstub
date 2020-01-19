@@ -602,7 +602,7 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                 {
                     size_t cbProcessed = pbPktSep - &pThis->pbPktBuf[2];
                     size_t cbRead = 0;
-                    rc = gdbStubCtxParseHexStringAsInteger(pbPktSep + 1, pThis->cbPkt - 1 - cbProcessed - 1, &cbRead, '#', NULL);
+                    rc = gdbStubCtxParseHexStringAsInteger(pbPktSep + 1, pThis->cbPkt - 1 - cbProcessed - 1, &cbRead, GDBSTUB_PKT_END, NULL);
                     if (rc == GDBSTUB_INF_SUCCESS)
                     {
                         size_t cbReplyPkt = cbRead * 2; /* One byte needs two characters. */
@@ -633,6 +633,40 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                                 cbPktBufLeft -= cbThisRead;
                             }
 
+                            if (rc == GDBSTUB_INF_SUCCESS)
+                                rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbReplyPkt);
+                            else
+                                rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                        }
+                        else
+                            rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                    }
+                    else
+                        rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                }
+                else
+                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                break;
+            }
+            case 'p':
+            {
+                uint64_t uReg = 0;
+                int rc = gdbStubCtxParseHexStringAsInteger(&pThis->pbPktBuf[2], pThis->cbPkt - 1, &uReg,
+                                                           GDBSTUB_PKT_END, NULL);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                {
+                    uint32_t idxReg = (uint32_t)uReg;
+
+                    rc = gdbStubCtxIfTgtRegsRead(pThis, &idxReg, 1, pThis->pvRegsScratch);
+                    if (rc == GDBSTUB_INF_SUCCESS)
+                    {
+                        size_t cbReplyPkt = pThis->pIf->cbReg * 2; /* One byte needs two characters. */
+
+                        /* Encode data and send. */
+                        rc = gdbStubCtxEnsurePktBufSpace(pThis, cbReplyPkt);
+                        if (rc == GDBSTUB_INF_SUCCESS)
+                        {
+                            rc = gdbStubCtxEncodeBinaryAsHex(pThis->pbPktBuf, pThis->cbPktBufMax, pThis->pvRegsScratch, pThis->pIf->cbReg);
                             if (rc == GDBSTUB_INF_SUCCESS)
                                 rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbReplyPkt);
                             else
