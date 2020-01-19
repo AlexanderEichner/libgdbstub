@@ -53,10 +53,31 @@ typedef GDBSTUBCTX *PGDBSTUBCTX;
 
 
 /**
+ * The current target state.
+ */
+typedef enum GDBSTUBTGTSTATE
+{
+    /** Invalid state, do not use. */
+    GDBSTUBTGTSTATE_INVALID = 0,
+    /** Target is currently running. */
+    GDBSTUBTGTSTATE_RUNNING,
+    /** Target is stopped. */
+    GDBSTUBTGTSTATE_STOPPED,
+    /** 32bit hack. */
+    GDBSTUBTGTSTATE_32BIT_HACK = 0x7fffffff
+} GDBSTUBTGTSTATE;
+
+
+/**
  * GDB stub interface callback table.
  */
 typedef struct GDBSTUBIF
 {
+    /** Register size in bytes. */
+    uint32_t   cbReg;
+    /** Register names for the target (the index will be used by the getter/setter callbacks), ended by a NULL entry. */
+    const char **papszRegs;
+
     /**
      * Allocate memory.
      *
@@ -77,6 +98,15 @@ typedef struct GDBSTUBIF
      * @param   pv                  The pointer of the memory region to free.
      */
     void   (*pfnMemFree) (GDBSTUBCTX hGdbStubCtx, void *pvUser, void *pv);
+
+    /**
+     * Returns the current target state.
+     *
+     * @returns Target state.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the callback.
+     * @param   pvUser              Opaque user data passed during creation of the stub context.
+     */
+    GDBSTUBTGTSTATE (*pfnTgtGetState) (GDBSTUBCTX hGdbStubCtx, void *pvUser);
 
     /**
      * Stop the target.
@@ -129,7 +159,33 @@ typedef struct GDBSTUBIF
      */
     int    (*pfnTgtMemWrite) (GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMADDR GdbTgtMemAddr, const void *pvSrc, size_t cbWrite);
 
-    /** @todo Read/Write registers, breakpoint handling... */
+    /**
+     * Reads the given registers of the target.
+     *
+     * @returns Status code.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the callback.
+     * @param   pvUser              Opaque user data passed during creation of the stub context.
+     * @param   paRegs              Register indizes to read.
+     * @param   cRegs               Number of registers to read.
+     * @param   pvDst               Where to store the register content (caller makes sure there is enough space
+     *                              to store cRegs * GDBSTUBIF::cbReg bytes of data).
+     */
+    int    (*pfnTgtRegsRead) (GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *paRegs, uint32_t cRegs, void *pvDst);
+
+    /**
+     * Writes the given registers of the target.
+     *
+     * @returns Status code.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the callback.
+     * @param   pvUser              Opaque user data passed during creation of the stub context.
+     * @param   paRegs              Register indizes to write.
+     * @param   cRegs               Number of registers to write.
+     * @param   pvSrc               The register content to write (caller makes sure there is enough space
+     *                              to store cRegs * GDBSTUBIF::cbReg bytes of data).
+     */
+    int    (*pfnTgtRegsWrite) (GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *paRegs, uint32_t cRegs, const void *pvSrc);
+
+    /** @todo breakpoint handling... */
 } GDBSTUBIF;
 /** Pointer to a interface callback table. */
 typedef GDBSTUBIF *PGDBSTUBIF;

@@ -78,6 +78,14 @@ typedef struct GDBSTUBCTXINT
     uint8_t                     *pbPktBuf;
     /** Number of bytes left for the checksum. */
     size_t                      cbChksumRecvLeft;
+    /** Last target state seen. */
+    GDBSTUBTGTSTATE             enmTgtStateLast;
+    /** Number of registers this architecture has. */
+    uint32_t                    cRegs;
+    /** Register scratch space (for reading writing registers). */
+    void                        *pvRegsScratch;
+    /** Register index array for querying setting. */
+    uint32_t                    *paidxRegs;
 } GDBSTUBCTXINT;
 /** Pointer to an internal PSP proxy context. */
 typedef GDBSTUBCTXINT *PGDBSTUBCTXINT;
@@ -106,6 +114,70 @@ static inline void *gdbStubCtxIfMemAlloc(PGDBSTUBCTXINT pThis, size_t cbAlloc)
 static inline void gdbStubCtxIfMemFree(PGDBSTUBCTXINT pThis, void *pv)
 {
     return pThis->pIf->pfnMemFree(pThis, pThis->pvUser, pv);
+}
+
+
+/**
+ * Wrapper for the interface target get state callback.
+ *
+ * @returns Target state.
+ * @param   pThis               The GDB stub context.
+ */
+static inline GDBSTUBTGTSTATE gdbStubCtxIfTgtGetState(PGDBSTUBCTXINT pThis)
+{
+    return pThis->pIf->pfnTgtGetState(pThis, pThis->pvUser);
+}
+
+
+/**
+ * Wrapper for the interface target stop callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static inline int gdbStubCtxIfTgtStop(PGDBSTUBCTXINT pThis)
+{
+    return pThis->pIf->pfnTgtStop(pThis, pThis->pvUser);
+}
+
+
+/**
+ * Wrapper for the interface target step callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static inline int gdbStubCtxIfTgtStep(PGDBSTUBCTXINT pThis)
+{
+    return pThis->pIf->pfnTgtStep(pThis, pThis->pvUser);
+}
+
+
+/**
+ * Wrapper for the interface target continue callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static inline int gdbStubCtxIfTgtContinue(PGDBSTUBCTXINT pThis)
+{
+    return pThis->pIf->pfnTgtCont(pThis, pThis->pvUser);
+}
+
+
+/**
+ * Wrapper for the interface target read registers callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   paRegs              Register indizes to read.
+ * @param   cRegs               Number of registers to read.
+ * @param   pvDst               Where to store the register content (caller makes sure there is enough space
+ *                              to store cRegs * GDBSTUBIF::cbReg bytes of data).
+ */
+static inline int gdbStubCtxIfTgtRegsRead(PGDBSTUBCTXINT pThis, uint32_t *paRegs, uint32_t cRegs, void *pvDst)
+{
+    return pThis->pIf->pfnTgtRegsRead(pThis, pThis->pvUser, paRegs, cRegs, pvDst);
 }
 
 
@@ -204,6 +276,23 @@ static inline uint8_t gdbStubCtxChrToHex(char ch)
 
 
 /**
+ * Converts a 4bit hex number to the appropriate character.
+ *
+ * @returns Character representing the 4bit hex number.
+ * @param   uHex                The 4 bit hex number.
+ */
+static inline char gdbStubCtxHexToChr(uint8_t uHex)
+{
+    if (uHex < 0xa)
+        return '0' + uHex;
+    if (uHex <= 0xf)
+        return 'A' + uHex - 0xa;
+
+    return 'X';
+}
+
+
+/**
  * Internal memchr.
  *
  * @returns Pointer to the first byte containing the given character or NULL if not found.
@@ -251,42 +340,29 @@ static void *gdbStubCtxMemmove(void *pvDst, const void *pvSrc, size_t cb)
 
 
 /**
- * Processes a completely received packet.
+ * Encodes the given buffer as a hexstring string it into the given destination buffer.
  *
  * @returns Status code.
- * @param   pThis               The GDB stub context.
+ * @param   pbDst               Where store the resulting hex string on success.
+ * @param   cbDst               Size of the destination buffer in bytes.
+ * @param   pvSrc               The data to encode.
+ * @param   cbSrc               Number of bytes to encode.
  */
-static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
+static int gdbStubCtxEncodeBinaryAsHex(uint8_t *pbDst, size_t cbDst, void *pvSrc, size_t cbSrc)
 {
-    /** @todo Continue here next */
-    return GDBSTUB_ERR_INTERNAL_ERROR;
-}
+    if (cbSrc * 2 > cbDst)
+        return GDBSTUB_ERR_INVALID_PARAMETER;
 
+    uint8_t *pbSrc = (uint8_t *)pvSrc;
+    for (size_t i = 0; i < cbSrc; i++)
+    {
+        uint8_t bSrc = *pbSrc++;
 
-/**
- * Resets the packet buffer.
- *
- * @returns nothing.
- * @param   pThis               The GDB stub context.
- */
-static void gdbStubCtxPktBufReset(PGDBSTUBCTXINT pThis)
-{
-    pThis->offPktBuf        = 0;
-    pThis->cbPkt            = 0;
-    pThis->cbChksumRecvLeft = 2;
-}
+        *pbDst++ = gdbStubCtxHexToChr(bSrc >> 4);
+        *pbDst++ = gdbStubCtxHexToChr(bSrc & 0xf);
+    }
 
-
-/**
- * Resets the given GDB stub context to the initial state.
- *
- * @returns nothing.
- * @param   pThis               The GDB stub context.
- */
-static void gdbStubCtxReset(PGDBSTUBCTXINT pThis)
-{
-    pThis->enmState = GDBSTUBRECVSTATE_PACKET_WAIT_FOR_START;
-    gdbStubCtxPktBufReset(pThis);
+    return GDBSTUB_INF_SUCCESS;
 }
 
 
@@ -322,6 +398,180 @@ static int gdbStubCtxEnsurePktBufSpace(PGDBSTUBCTXINT pThis, size_t cbSpace)
 
 
 /**
+ * Sends the given reply packet, doing the framing, checksumming, etc.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbReplyPkt          The reply packet to send.
+ * @param   cbReplyPkt          Size of the reply packet in bytes.
+ */
+static int gdbStubCtxReplySend(PGDBSTUBCTXINT pThis, const uint8_t *pbReplyPkt, size_t cbReplyPkt)
+{
+    uint8_t chPktStart = GDBSTUB_PKT_START;
+    int rc = gdbStubCtxIoIfWrite(pThis, &chPktStart, sizeof(chPktStart));
+    if (rc == GDBSTUB_INF_SUCCESS)
+    {
+        uint8_t uChkSum = 0;
+        for (uint32_t i = 0; i < cbReplyPkt; i++)
+            uChkSum += pbReplyPkt[i];
+
+        if (cbReplyPkt)
+            rc = gdbStubCtxIoIfWrite(pThis, pbReplyPkt, cbReplyPkt);
+        if (rc == GDBSTUB_INF_SUCCESS)
+        {
+            uint8_t chPktEnd = GDBSTUB_PKT_END;
+            rc = gdbStubCtxIoIfWrite(pThis, &chPktEnd, sizeof(chPktEnd));
+            if (rc == GDBSTUB_INF_SUCCESS)
+            {
+                uint8_t achChkSum[2];
+
+                achChkSum[0] = gdbStubCtxHexToChr(uChkSum >> 4);
+                achChkSum[1] = gdbStubCtxHexToChr(uChkSum & 0xf);
+                rc = gdbStubCtxIoIfWrite(pThis, &achChkSum[0], sizeof(achChkSum));
+            }
+        }
+    }
+
+    return rc;
+}
+
+
+/**
+ * Sends a 'OK' reply packet.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static int gdbStubCtxReplySendOk(PGDBSTUBCTXINT pThis)
+{
+    char achOk[2] = { 'O', 'K' };
+    return gdbStubCtxReplySend(pThis, &achOk[0], sizeof(achOk));
+}
+
+
+/**
+ * Sends a 'E NN' reply packet.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   uErr                The error code to send.
+ */
+static int gdbStubCtxReplySendErr(PGDBSTUBCTXINT pThis, uint8_t uErr)
+{
+    char achErr[3] = { 'E', 0, 0 };
+    achErr[1] = gdbStubCtxHexToChr(uErr >> 4);
+    achErr[2] = gdbStubCtxHexToChr(uErr & 0xf);
+    return gdbStubCtxReplySend(pThis, &achErr[0], sizeof(achErr));
+}
+
+
+/**
+ * Sends a signal trap (S 05) packet to indicate that the target has stopped.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static int gdbStubCtxReplySendSigTrap(PGDBSTUBCTXINT pThis)
+{
+    uint8_t achSigTrap[3] = { 'S', '0', '5' };
+    return gdbStubCtxReplySend(pThis, &achSigTrap[0], sizeof(achSigTrap));
+}
+
+
+/**
+ * Processes a completely received packet.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
+{
+    int rc = GDBSTUB_INF_SUCCESS;
+
+    if (pThis->cbPkt >= 1)
+    {
+        switch (pThis->pbPktBuf[1])
+        {
+            case '?':
+            {
+                /* Return signal state. */
+                rc = gdbStubCtxReplySendSigTrap(pThis);
+                break;
+            }
+            case 's': /* Single step, target stopped immediately again. */
+            {
+                rc = gdbStubCtxIfTgtStep(pThis);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                    rc = gdbStubCtxReplySendSigTrap(pThis);
+                break;
+            }
+            case 'c': /* Continue, no response */
+            {
+                rc = gdbStubCtxIfTgtContinue(pThis);
+                break;
+            }
+            case 'g': /* Read general registers. */
+            {
+                rc = gdbStubCtxIfTgtRegsRead(pThis, pThis->paidxRegs, pThis->cRegs, pThis->pvRegsScratch);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                {
+                    size_t cbReplyPkt = pThis->cRegs * pThis->pIf->cbReg * 2; /* One byte needs two characters. */
+
+                    /* Encode data and send. */
+                    rc = gdbStubCtxEnsurePktBufSpace(pThis, cbReplyPkt);
+                    if (rc == GDBSTUB_INF_SUCCESS)
+                    {
+                        rc = gdbStubCtxEncodeBinaryAsHex(pThis->pbPktBuf, pThis->cbPktBufMax, pThis->pvRegsScratch, pThis->cRegs * pThis->pIf->cbReg);
+                        if (rc == GDBSTUB_INF_SUCCESS)
+                            rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbReplyPkt);
+                        else
+                            rc = gdbStubCtxReplySendErr(pThis, (-rc) & 0xff);
+                    }
+                    else
+                        rc = gdbStubCtxReplySendErr(pThis, (-rc) & 0xff);
+                }
+                else
+                    rc = gdbStubCtxReplySendErr(pThis, (-rc) & 0xff);
+                break;
+            }
+            default:
+                /* Not supported, send empty reply. */
+                rc = gdbStubCtxReplySend(pThis, NULL, 0);
+        }
+    }
+
+    return rc;
+}
+
+
+/**
+ * Resets the packet buffer.
+ *
+ * @returns nothing.
+ * @param   pThis               The GDB stub context.
+ */
+static void gdbStubCtxPktBufReset(PGDBSTUBCTXINT pThis)
+{
+    pThis->offPktBuf        = 0;
+    pThis->cbPkt            = 0;
+    pThis->cbChksumRecvLeft = 2;
+}
+
+
+/**
+ * Resets the given GDB stub context to the initial state.
+ *
+ * @returns nothing.
+ * @param   pThis               The GDB stub context.
+ */
+static void gdbStubCtxReset(PGDBSTUBCTXINT pThis)
+{
+    pThis->enmState = GDBSTUBRECVSTATE_PACKET_WAIT_FOR_START;
+    gdbStubCtxPktBufReset(pThis);
+}
+
+
+/**
  * Searches for the start character in the current data buffer.
  *
  * @returns Status code.
@@ -331,6 +581,7 @@ static int gdbStubCtxEnsurePktBufSpace(PGDBSTUBCTXINT pThis, size_t cbSpace)
  */
 static int gdbStubCtxPktBufSearchStart(PGDBSTUBCTXINT pThis, size_t cbData, size_t *pcbProcessed)
 {
+    int rc = GDBSTUB_INF_SUCCESS;
     uint8_t *pbStart = gdbStubCtxMemchr(pThis->pbPktBuf, GDBSTUB_PKT_START, cbData);
     if (pbStart)
     {
@@ -342,13 +593,21 @@ static int gdbStubCtxPktBufSearchStart(PGDBSTUBCTXINT pThis, size_t cbData, size
     }
     else
     {
+        /* Check for out of band characters. */
+        if (gdbStubCtxMemchr(pThis->pbPktBuf, GDBSTUB_OOB_INTERRUPT, cbData) != NULL)
+        {
+            /* Stop target and send packet to indicate the target has stopped. */
+            rc = gdbStubCtxIfTgtStop(pThis);
+            if (rc == GDBSTUB_INF_SUCCESS)
+                rc = gdbStubCtxReplySendSigTrap(pThis);
+        }
+
         /* Not found, ignore the received data and reset the packet buffer. */
-        /** @todo Look for out of band characters. */
         gdbStubCtxPktBufReset(pThis);
         *pcbProcessed = cbData;
     }
 
-    return GDBSTUB_INF_SUCCESS;
+    return rc;
 }
 
 
@@ -483,6 +742,13 @@ static int gdbStubCtxPktBufProcess(PGDBSTUBCTXINT pThis, size_t cbData)
         cbData -= cbProcessed;
     }
 
+    if (   gdbStubCtxIfTgtGetState(pThis) == GDBSTUBTGTSTATE_STOPPED
+        && pThis->enmTgtStateLast != GDBSTUBTGTSTATE_STOPPED)
+    {
+        rc = gdbStubCtxReplySendSigTrap(pThis);
+        pThis->enmTgtStateLast = GDBSTUBTGTSTATE_STOPPED;
+    }
+
     return rc;
 }
 
@@ -535,13 +801,38 @@ int GDBStubCtxCreate(PGDBSTUBCTX phCtx, PCGDBSTUBIOIF pIoIf, PCGDBSTUBIF pIf, vo
     PGDBSTUBCTXINT pThis = (PGDBSTUBCTXINT)pIf->pfnMemAlloc(NULL, pvUser, sizeof(*pThis));
     if (pThis)
     {
-        pThis->pIoIf       = pIoIf;
-        pThis->pIf         = pIf;
-        pThis->pvUser      = pvUser;
-        pThis->cbPktBufMax = 0;
-        pThis->pbPktBuf    = NULL;
-        gdbStubCtxReset(pThis);
-        *phCtx = pThis;
+        pThis->pIoIf           = pIoIf;
+        pThis->pIf             = pIf;
+        pThis->pvUser          = pvUser;
+        pThis->cbPktBufMax     = 0;
+        pThis->pbPktBuf        = NULL;
+        pThis->enmTgtStateLast = GDBSTUBTGTSTATE_INVALID;
+
+        uint32_t cRegs = 0;
+        while (pIf->papszRegs[cRegs] != NULL)
+            cRegs++;
+
+        pThis->cRegs = cRegs;
+
+        /* Allocate scratch space for register content and index array. */
+        void *pvRegsScratch = gdbStubCtxIfMemAlloc(pThis, cRegs * pIf->cbReg + cRegs * sizeof(uint32_t));
+        if (pvRegsScratch)
+        {
+            pThis->pvRegsScratch = pvRegsScratch;
+            pThis->paidxRegs     = (uint32_t *)((uint8_t *)pvRegsScratch + (cRegs * pIf->cbReg));
+
+            /* GDB always sets or queries all registers so we can statically initialize the index array. */
+            for (uint32_t i = 0; i < pThis->cRegs; i++)
+                pThis->paidxRegs[i] = i;
+
+            gdbStubCtxReset(pThis);
+            *phCtx = pThis;
+            return GDBSTUB_INF_SUCCESS;
+        }
+        else
+            rc = GDBSTUB_ERR_NO_MEMORY;
+
+        pIf->pfnMemFree(NULL, pvUser, pThis);
     }
     else
         rc = GDBSTUB_ERR_NO_MEMORY;

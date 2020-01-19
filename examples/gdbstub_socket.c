@@ -55,6 +55,32 @@ typedef const GDBSOCKSTUB *PCGDBSOCKSTUB;
 
 
 /**
+ * GDB stub register names (for ARM).
+ */
+static const char *g_apszGdbStubRegs[] =
+{
+    "r0",
+    "r1",
+    "r2",
+    "r3",
+    "r4",
+    "r5",
+    "r6",
+    "r7",
+    "r8",
+    "r9",
+    "r10",
+    "r11",
+    "r12",
+    "sp",
+    "lr",
+    "pc",
+/*    "cpsr",*/
+    NULL
+};
+
+
+/**
  * @copydoc{GDBSTUBIF,pfnMemAlloc}
  */
 static void *gdbStubIfMemAlloc(GDBSTUBCTX hGdbStubCtx, void *pvUser, size_t cb)
@@ -75,6 +101,15 @@ static void gdbStubIfMemFree(GDBSTUBCTX hGdbStubCtx, void *pvUser, void *pv)
     (void)pvUser;
 
     free(pv);
+}
+
+
+/**
+ * @copydoc{GDBSTUBIF,pfnTgtGetState}
+ */
+static GDBSTUBTGTSTATE gdbStubIfTgtGetState(GDBSTUBCTX hGdbStubCtx, void *pvUser)
+{
+    return GDBSTUBTGTSTATE_STOPPED;
 }
 
 
@@ -124,14 +159,43 @@ static int gdbStubIfTgtMemWrite(GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMA
 
 
 /**
+ * @copydoc{GDBSTUBIF,pfnTgtRegsRead}
+ */
+static int gdbStubIfTgtRegsRead(GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *paRegs, uint32_t cRegs, void *pvDst)
+{
+    uint32_t *pau32Regs = (uint32_t *)pvDst;
+
+    for (uint32_t i = 0; i < cRegs; i++)
+        *pau32Regs++ = paRegs[i];
+
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
+ * @copydoc{GDBSTUBIF,pfnTgtRegsWrite}
+ */
+static int gdbStubIfTgtRegsWrite(GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *paRegs, uint32_t cRegs, const void *pvSrc)
+{
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
  * GDB stub interface callback table.
  */
 const GDBSTUBIF g_GdbStubIf =
 {
+    /** cbReg */
+    sizeof(uint32_t),
+    /** papszRegs */
+    &g_apszGdbStubRegs[0],
     /** pfnMemAlloc */
     gdbStubIfMemAlloc,
     /** pfnMemFree */
     gdbStubIfMemFree,
+    /** pfnTgtGetState */
+    gdbStubIfTgtGetState,
     /** pfnTgtStop */
     gdbStubIfTgtStop,
     /** pfnTgtStep */
@@ -141,7 +205,9 @@ const GDBSTUBIF g_GdbStubIf =
     /** pfnTgtMemRead */
     gdbStubIfTgtMemRead,
     /** pfnTgtMemWrite */
-    gdbStubIfTgtMemWrite
+    gdbStubIfTgtMemWrite,
+    /** pfnTgtRegsRead */
+    gdbStubIfTgtRegsRead
 };
 
 
