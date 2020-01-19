@@ -145,6 +145,7 @@ static int gdbStubIfTgtCont(GDBSTUBCTX hGdbStubCtx, void *pvUser)
  */
 static int gdbStubIfTgtMemRead(GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMADDR GdbTgtMemAddr, void *pvDst, size_t cbRead)
 {
+    memset(pvDst, 0, cbRead);
     return GDBSTUB_INF_SUCCESS;
 }
 

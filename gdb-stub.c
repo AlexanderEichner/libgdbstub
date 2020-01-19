@@ -170,6 +170,21 @@ static inline int gdbStubCtxIfTgtContinue(PGDBSTUBCTXINT pThis)
  *
  * @returns Status code.
  * @param   pThis               The GDB stub context.
+ * @param   GdbTgtMemAddr       The target memory address to read.
+ * @param   pvDst               Where to store the read data.
+ * @param   cbRead              Number of bytes to read.
+ */
+static inline int gdbStubCtxIfTgtMemRead(PGDBSTUBCTXINT pThis, GDBTGTMEMADDR GdbTgtMemAddr, void *pvDst, size_t cbRead)
+{
+    return pThis->pIf->pfnTgtMemRead(pThis, pThis->pvUser, GdbTgtMemAddr, pvDst, cbRead);
+}
+
+
+/**
+ * Wrapper for the interface target read registers callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
  * @param   paRegs              Register indizes to read.
  * @param   cRegs               Number of registers to read.
  * @param   pvDst               Where to store the register content (caller makes sure there is enough space
@@ -367,6 +382,34 @@ static int gdbStubCtxEncodeBinaryAsHex(uint8_t *pbDst, size_t cbDst, void *pvSrc
 
 
 /**
+ * Decodes the given ASCII hexstring as binary data up until the given separator is found or the end of the string is reached.
+ *
+ * @returns Status code.
+ * @param   pbBuf               The buffer containing the hexstring to convert.
+ * @param   cbBuf               Size of the buffer in bytes.
+ * @param   pvDst               Where to store the decoded data.
+ * @param   cbDst               Maximum buffer sizein bytes.
+ * @param   chSep               The character to stop conversion at.
+ * @param   ppbSep              Where to store the pointer in the buffer where the separator was found, optional.
+ */
+static int gdbStubCtxParseHexStringAsInteger(uint8_t *pbBuf, size_t cbBuf, uint64_t *puVal, uint8_t chSep, uint8_t **ppbSep)
+{
+    uint64_t uVal = 0;
+
+    while (   cbBuf
+           && *pbBuf != chSep)
+        uVal = uVal * 16 + gdbStubCtxChrToHex(*pbBuf++);
+
+    *puVal = uVal;
+
+    if (ppbSep)
+        *ppbSep = pbBuf;
+
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
  * Ensures that there is at least the given amount of bytes of free space left in the packet buffer.
  *
  * @returns Status code (error when increasing the buffer failed).
@@ -479,6 +522,20 @@ static int gdbStubCtxReplySendSigTrap(PGDBSTUBCTXINT pThis)
 
 
 /**
+ * Sends a GDB stub status code indicating an error using the error reply packet.
+ *
+ * @returns Stauts code.
+ * @param   pThis               The GDB stub context.
+ * @param   rc                  The status code to send.
+ */
+static int gdbStubCtxReplySendErrSts(PGDBSTUBCTXINT pThis, int rc)
+{
+    /** Todo convert error codes maybe. */
+    return gdbStubCtxReplySendErr(pThis, (-rc) & 0xff);
+}
+
+
+/**
  * Processes a completely received packet.
  *
  * @returns Status code.
@@ -525,13 +582,70 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                         if (rc == GDBSTUB_INF_SUCCESS)
                             rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbReplyPkt);
                         else
-                            rc = gdbStubCtxReplySendErr(pThis, (-rc) & 0xff);
+                            rc = gdbStubCtxReplySendErrSts(pThis, rc);
                     }
                     else
-                        rc = gdbStubCtxReplySendErr(pThis, (-rc) & 0xff);
+                        rc = gdbStubCtxReplySendErrSts(pThis, rc);
                 }
                 else
-                    rc = gdbStubCtxReplySendErr(pThis, (-rc) & 0xff);
+                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                break;
+            }
+            case 'm': /* Read memory. */
+            {
+                GDBTGTMEMADDR GdbTgtAddr = 0;
+                uint8_t *pbPktSep = NULL;
+
+                int rc = gdbStubCtxParseHexStringAsInteger(&pThis->pbPktBuf[2], pThis->cbPkt - 1, &GdbTgtAddr,
+                                                           ',', &pbPktSep);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                {
+                    size_t cbProcessed = pbPktSep - &pThis->pbPktBuf[2];
+                    size_t cbRead = 0;
+                    rc = gdbStubCtxParseHexStringAsInteger(pbPktSep + 1, pThis->cbPkt - 1 - cbProcessed - 1, &cbRead, '#', NULL);
+                    if (rc == GDBSTUB_INF_SUCCESS)
+                    {
+                        size_t cbReplyPkt = cbRead * 2; /* One byte needs two characters. */
+
+                        rc = gdbStubCtxEnsurePktBufSpace(pThis, cbReplyPkt);
+                        if (rc == GDBSTUB_INF_SUCCESS)
+                        {
+                            uint8_t *pbPktBuf = pThis->pbPktBuf;
+                            size_t cbPktBufLeft = cbReplyPkt;
+
+                            while (   cbRead
+                                   && rc == GDBSTUB_INF_SUCCESS)
+                            {
+                                size_t cbThisRead = cbRead < 1024 ? cbRead : 1024;
+                                uint8_t abTmp[1024];
+
+                                rc = gdbStubCtxIfTgtMemRead(pThis, GdbTgtAddr, &abTmp[0], cbThisRead);
+                                if (rc != GDBSTUB_INF_SUCCESS)
+                                    break;
+
+                                rc = gdbStubCtxEncodeBinaryAsHex(pbPktBuf, cbPktBufLeft, &abTmp[0], cbThisRead);
+                                if (rc != GDBSTUB_INF_SUCCESS)
+                                    break;
+
+                                GdbTgtAddr   += cbThisRead;
+                                cbRead       -= cbThisRead;
+                                pbPktBuf     += cbThisRead;
+                                cbPktBufLeft -= cbThisRead;
+                            }
+
+                            if (rc == GDBSTUB_INF_SUCCESS)
+                                rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbReplyPkt);
+                            else
+                                rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                        }
+                        else
+                            rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                    }
+                    else
+                        rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                }
+                else
+                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
                 break;
             }
             default:
