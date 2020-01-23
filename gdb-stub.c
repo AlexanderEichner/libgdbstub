@@ -787,6 +787,8 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
             case 'c': /* Continue, no response */
             {
                 rc = gdbStubCtxIfTgtContinue(pThis);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                    pThis->enmTgtStateLast = GDBSTUBTGTSTATE_RUNNING;
                 break;
             }
             case 'g': /* Read general registers. */
