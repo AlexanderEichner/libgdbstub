@@ -36,6 +36,8 @@
 /** The out-of-band interrupt character. */
 #define GDBSTUB_OOB_INTERRUPT   0x03
 
+/** Returns the number of elements from a static array. */
+#define ELEMENTS(a_Array) (sizeof(a_Array)/sizeof(a_Array[0]))
 
 /**
  * GDB stub receive state.
@@ -89,6 +91,36 @@ typedef struct GDBSTUBCTXINT
 } GDBSTUBCTXINT;
 /** Pointer to an internal PSP proxy context. */
 typedef GDBSTUBCTXINT *PGDBSTUBCTXINT;
+
+
+/**
+ * Specific query packet processor callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbArgs              Pointer to the arguments.
+ * @param   cbArgs              Size of the arguments in bytes.
+ */
+typedef int (FNGDBTUBQPKTPROC) (PGDBSTUBCTXINT pThis, const uint8_t *pbArgs, size_t cbArgs);
+typedef FNGDBTUBQPKTPROC *PFNGDBTUBQPKTPROC;
+
+
+/**
+ * 'q' packet processor.
+ */
+typedef struct GDBSTUBQPKTPROC
+{
+    /** Name */
+    const char                  *pszName;
+    /** Length of name in characters (without \0 terminator). */
+    uint32_t                    cchName;
+    /** The callback to call for processing the particular query. */
+    PFNGDBTUBQPKTPROC           pfnProc;
+} GDBSTUBQPKTPROC;
+/** Pointer to a 'q' packet processor entry. */
+typedef GDBSTUBQPKTPROC *PGDBSTUBQPKTPROC;
+/** Pointer to a const 'q' packet processor entry. */
+typedef const GDBSTUBQPKTPROC *PCGDBSTUBQPKTPROC;
 
 
 /**
@@ -193,6 +225,40 @@ static inline int gdbStubCtxIfTgtMemRead(PGDBSTUBCTXINT pThis, GDBTGTMEMADDR Gdb
 static inline int gdbStubCtxIfTgtRegsRead(PGDBSTUBCTXINT pThis, uint32_t *paRegs, uint32_t cRegs, void *pvDst)
 {
     return pThis->pIf->pfnTgtRegsRead(pThis, pThis->pvUser, paRegs, cRegs, pvDst);
+}
+
+
+/**
+ * Wrapper for the interface target tracepoint set callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   GdbTgtTpAddr        The target address space memory address to set the trace point at.
+ * @param   enmTpType           The tracepoint type (working on instructions or memory accesses).
+ * @param   enmTpAction         The action to execute if the tracepoint is hit.
+ */
+static inline int gdbStubCtxIfTgtTpSet(PGDBSTUBCTXINT pThis, GDBTGTMEMADDR GdbTgtTpAddr, GDBSTUBTPTYPE enmTpType, GDBSTUBTPACTION enmTpAction)
+{
+    if (pThis->pIf->pfnTgtTpSet)
+        return pThis->pIf->pfnTgtTpSet(pThis, pThis->pvUser, GdbTgtTpAddr, enmTpType, enmTpAction);
+
+    return GDBSTUB_ERR_NOT_SUPPORTED;
+}
+
+
+/**
+ * Wrapper for the interface target tracepoint clear callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   GdbTgtTpAddr        The target address space memory address to remove the trace point from.
+ */
+static inline int gdbStubCtxIfTgtTpClear(PGDBSTUBCTXINT pThis, GDBTGTMEMADDR GdbTgtTpAddr)
+{
+    if (pThis->pIf->pfnTgtTpClear)
+        return pThis->pIf->pfnTgtTpClear(pThis, pThis->pvUser, GdbTgtTpAddr);
+
+    return GDBSTUB_ERR_NOT_SUPPORTED;
 }
 
 
@@ -355,6 +421,37 @@ static void *gdbStubCtxMemmove(void *pvDst, const void *pvSrc, size_t cb)
 
 
 /**
+ * Compares two memory buffers.
+ *
+ * @returns Status of the comparison.
+ * @retval 0 if both memory buffers are identical.
+ * @retval difference between the first two differing bytes.
+ * @param   pvBuf1                  First buffer.
+ * @param   pvBuf2                  Second buffer.
+ * @param   cb                      How many bytes to compare.
+ *
+ * @todo Allow using optimized variants of memcmp.
+ */
+static int gdbStubMemcmp(const void *pvBuf1, const void *pvBuf2, size_t cb)
+{
+    const uint8_t *pbBuf1 = (const uint8_t *)pvBuf1;
+    const uint8_t *pbBuf2 = (const uint8_t *)pvBuf2;
+
+    while (cb)
+    {
+        if (*pbBuf1 != *pbBuf2)
+            return *pbBuf1 - *pbBuf2;
+
+        pbBuf1++;
+        pbBuf2++;
+        cb--;
+    }
+
+    return 0;
+}
+
+
+/**
  * Encodes the given buffer as a hexstring string it into the given destination buffer.
  *
  * @returns Status code.
@@ -392,7 +489,7 @@ static int gdbStubCtxEncodeBinaryAsHex(uint8_t *pbDst, size_t cbDst, void *pvSrc
  * @param   chSep               The character to stop conversion at.
  * @param   ppbSep              Where to store the pointer in the buffer where the separator was found, optional.
  */
-static int gdbStubCtxParseHexStringAsInteger(uint8_t *pbBuf, size_t cbBuf, uint64_t *puVal, uint8_t chSep, uint8_t **ppbSep)
+static int gdbStubCtxParseHexStringAsInteger(const uint8_t *pbBuf, size_t cbBuf, uint64_t *puVal, uint8_t chSep, const uint8_t **ppbSep)
 {
     uint64_t uVal = 0;
 
@@ -524,7 +621,7 @@ static int gdbStubCtxReplySendSigTrap(PGDBSTUBCTXINT pThis)
 /**
  * Sends a GDB stub status code indicating an error using the error reply packet.
  *
- * @returns Stauts code.
+ * @returns Status code.
  * @param   pThis               The GDB stub context.
  * @param   rc                  The status code to send.
  */
@@ -532,6 +629,131 @@ static int gdbStubCtxReplySendErrSts(PGDBSTUBCTXINT pThis, int rc)
 {
     /** Todo convert error codes maybe. */
     return gdbStubCtxReplySendErr(pThis, (-rc) & 0xff);
+}
+
+
+/**
+ * Parses the arguments of a 'Z' and 'z' packet.
+ *
+ * @returns Status code.
+ * @param   pbArgs                  Pointer to the start of the first argument.
+ * @param   cbArgs                  Number of argument bytes.
+ * @param   penmTpType              Where to store the tracepoint type on success.
+ * @param   pGdbTgtAddr             Where to store the address on success.
+ * @param   puKind                  Where to store the kind argument on success.
+ */
+static int gdbStubCtxParseTpPktArgs(const uint8_t *pbArgs, size_t cbArgs, GDBSTUBTPTYPE *penmTpType, GDBTGTMEMADDR *pGdbTgtAddr, uint64_t *puKind)
+{
+    const uint8_t *pbPktSep = NULL;
+    uint64_t uType = 0;
+
+    int rc = gdbStubCtxParseHexStringAsInteger(pbArgs, cbArgs, &uType,
+                                               ',', &pbPktSep);
+    if (rc == GDBSTUB_INF_SUCCESS)
+    {
+        cbArgs -= (uintptr_t)(pbPktSep - pbArgs) - 1;
+        rc = gdbStubCtxParseHexStringAsInteger(pbPktSep + 1, cbArgs, pGdbTgtAddr,
+                                               ',', &pbPktSep);
+        if (rc == GDBSTUB_INF_SUCCESS)
+        {
+            cbArgs -= (uintptr_t)(pbPktSep - pbArgs) - 1;
+            rc = gdbStubCtxParseHexStringAsInteger(pbPktSep + 1, cbArgs, puKind,
+                                                   GDBSTUB_PKT_END, NULL);
+            if (rc == GDBSTUB_INF_SUCCESS)
+            {
+                switch (uType)
+                {
+                    case 0:
+                        *penmTpType = GDBSTUBTPTYPE_EXEC_SW;
+                        break;
+                    case 1:
+                        *penmTpType = GDBSTUBTPTYPE_EXEC_HW;
+                        break;
+                    case 2:
+                        *penmTpType = GDBSTUBTPTYPE_MEM_WRITE;
+                        break;
+                    case 3:
+                        *penmTpType = GDBSTUBTPTYPE_MEM_READ;
+                        break;
+                    case 4:
+                        *penmTpType = GDBSTUBTPTYPE_MEM_ACCESS;
+                        break;
+                    default:
+                        rc = GDBSTUB_ERR_INVALID_PARAMETER;
+                        break;
+                }
+            }
+        }
+    }
+
+    return rc;
+}
+
+
+/**
+ * Processes the 'TStatus' query.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbArgs              Pointer to the start of the arguments in the packet.
+ * @param   cbArgs              Size of arguments in bytes.
+ */
+static int gdbStubCtxPktProcessQueryTStatus(PGDBSTUBCTXINT pThis, const uint8_t *pbArgs, size_t cbArgs)
+{
+    char achReply[2] = { 'T', '0' };
+    return gdbStubCtxReplySend(pThis, &achReply[0], sizeof(achReply));
+}
+
+
+#if 0 /* Later */
+/**
+ * Processes the 'Supported' query.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbArgs              Pointer to the start of the arguments in the packet.
+ * @param   cbArgs              Size of arguments in bytes.
+ */
+static int gdbStubCtxPktProcessQuerySupported(PGDBSTUBCTXINT pThis, const uint8_t *pbArgs, size_t cbArgs)
+{
+}
+#endif
+
+
+/**
+ * List of supported query packets.
+ */
+static const GDBSTUBQPKTPROC g_aQPktProcs[] =
+{
+#define GDBSTUBQPKTPROC_INIT(a_Name, a_pfnProc) { a_Name, sizeof(a_Name) - 1, a_pfnProc }
+    GDBSTUBQPKTPROC_INIT("TStatus",   gdbStubCtxPktProcessQueryTStatus),
+    /*GDBSTUBQPKTPROC_INIT("Supported", gdbStubCtxPktProcessQuerySupported),*/
+#undef GDBSTUBQPKTPROC_INIT
+};
+
+
+/**
+ * Processes a 'q' packet, sending the appropriate reply.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbQuery             The query packet data (without the 'q').
+ * @param   cbQuery             Size of the remaining query packet in bytes.
+ */
+static int gdbStubCtxPktProcessQuery(PGDBSTUBCTXINT pThis, const uint8_t *pbQuery, size_t cbQuery)
+{
+    int rc = GDBSTUB_INF_SUCCESS;
+
+    /* Search the query and execute the processor or return an empty reply if not supported. */
+    for (uint32_t i = 0; i < ELEMENTS(g_aQPktProcs); i++)
+    {
+        size_t cbCmp = g_aQPktProcs[i].cchName < cbQuery ? g_aQPktProcs[i].cchName : cbQuery;
+
+        if (!gdbStubMemcmp(pbQuery, g_aQPktProcs[i].pszName, cbCmp))
+            return g_aQPktProcs[i].pfnProc(pThis, pbQuery + cbCmp, cbQuery - cbCmp);
+    }
+
+    return gdbStubCtxReplySend(pThis, NULL, 0);
 }
 
 
@@ -594,7 +816,7 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
             case 'm': /* Read memory. */
             {
                 GDBTGTMEMADDR GdbTgtAddr = 0;
-                uint8_t *pbPktSep = NULL;
+                const uint8_t *pbPktSep = NULL;
 
                 int rc = gdbStubCtxParseHexStringAsInteger(&pThis->pbPktBuf[2], pThis->cbPkt - 1, &GdbTgtAddr,
                                                            ',', &pbPktSep);
@@ -648,7 +870,7 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                     rc = gdbStubCtxReplySendErrSts(pThis, rc);
                 break;
             }
-            case 'p':
+            case 'p': /* Read a single register */
             {
                 uint64_t uReg = 0;
                 int rc = gdbStubCtxParseHexStringAsInteger(&pThis->pbPktBuf[2], pThis->cbPkt - 1, &uReg,
@@ -680,6 +902,53 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                 }
                 else
                     rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                break;
+            }
+            case 'Z': /* Insert a breakpoint/watchpoint. */
+            {
+                GDBSTUBTPTYPE enmTpType = 0;
+                GDBTGTMEMADDR GdbTgtTpAddr = 0;
+                uint64_t      uKind = 0;
+
+                int rc = gdbStubCtxParseTpPktArgs(&pThis->pbPktBuf[2], pThis->cbPkt - 1, &enmTpType, &GdbTgtTpAddr, &uKind);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                {
+                    rc = gdbStubCtxIfTgtTpSet(pThis, GdbTgtTpAddr, enmTpType, GDBSTUBTPACTION_STOP);
+                    if (rc == GDBSTUB_INF_SUCCESS)
+                        rc = gdbStubCtxReplySendOk(pThis);
+                    else if (rc == GDBSTUB_ERR_NOT_SUPPORTED)
+                        rc = gdbStubCtxReplySend(pThis, NULL, 0);
+                    else
+                        rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                }
+                else
+                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                break;
+            }
+            case 'z': /* Remove a breakpoint/watchpoint. */
+            {
+                GDBSTUBTPTYPE enmTpType = 0;
+                GDBTGTMEMADDR GdbTgtTpAddr = 0;
+                uint64_t      uKind = 0;
+
+                int rc = gdbStubCtxParseTpPktArgs(&pThis->pbPktBuf[2], pThis->cbPkt - 1, &enmTpType, &GdbTgtTpAddr, &uKind);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                {
+                    rc = gdbStubCtxIfTgtTpClear(pThis, GdbTgtTpAddr);
+                    if (rc == GDBSTUB_INF_SUCCESS)
+                        rc = gdbStubCtxReplySendOk(pThis);
+                    else if (rc == GDBSTUB_ERR_NOT_SUPPORTED)
+                        rc = gdbStubCtxReplySend(pThis, NULL, 0);
+                    else
+                        rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                }
+                else
+                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                break;
+            }
+            case 'q': /* Query packet */
+            {
+                rc = gdbStubCtxPktProcessQuery(pThis, &pThis->pbPktBuf[2], pThis->cbPkt - 1);
                 break;
             }
             default:

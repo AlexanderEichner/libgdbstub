@@ -155,6 +155,8 @@ static int gdbStubIfTgtMemRead(GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMAD
  */
 static int gdbStubIfTgtMemWrite(GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMADDR GdbTgtMemAddr, const void *pvSrc, size_t cbWrite)
 {
+    printf("gdbStubIfTgtMemWrite: hGdbStubCtx=%p pvUser=%p GdbTgtMemAddr=%#llx pvSrc=%p cbWrite=%zu\n",
+           hGdbStubCtx, pvUser, GdbTgtMemAddr, pvSrc, cbWrite);
     return GDBSTUB_INF_SUCCESS;
 }
 
@@ -188,6 +190,28 @@ static int gdbStubIfTgtRegsWrite(GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t 
 
 
 /**
+ * @copydoc{GDBSTUBIF,pfnTgtTpSet}
+ */
+static int gdbStubIfTgtTpSet(GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMADDR GdbTgtTpAddr, GDBSTUBTPTYPE enmTpType, GDBSTUBTPACTION enmTpAction)
+{
+    printf("gdbStubIfTgtTpSet: hGdbStubCtx=%p pvUser=%p GdbTgtTpAddr=%#llx enmTpType=%u enmTpAction=%u\n",
+           hGdbStubCtx, pvUser, GdbTgtTpAddr, enmTpType, enmTpAction);
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
+ * @copydoc{GDBSTUBIF,pfnTgtTpClear}
+ */
+static int gdbStubIfTgtTpClear(GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMADDR GdbTgtTpAddr)
+{
+    printf("gdbStubIfTgtTpClear: hGdbStubCtx=%p pvUser=%p GdbTgtTpAddr=%#llx\n",
+           hGdbStubCtx, pvUser, GdbTgtTpAddr);
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
  * GDB stub interface callback table.
  */
 const GDBSTUBIF g_GdbStubIf =
@@ -213,7 +237,13 @@ const GDBSTUBIF g_GdbStubIf =
     /** pfnTgtMemWrite */
     gdbStubIfTgtMemWrite,
     /** pfnTgtRegsRead */
-    gdbStubIfTgtRegsRead
+    gdbStubIfTgtRegsRead,
+    /** pfnTgtRegsWrite */
+    gdbStubIfTgtRegsWrite,
+    /** pfnTgtTpSet */
+    gdbStubIfTgtTpSet,
+    /** pfnTgtTpClear */
+    gdbStubIfTgtTpClear
 };
 
 

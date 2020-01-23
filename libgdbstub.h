@@ -48,8 +48,10 @@ typedef GDBSTUBCTX *PGDBSTUBCTX;
 #define GDBSTUB_INF_TRY_AGAIN         (3)
 /** Error code - internal error (bug in the library). */
 #define GDBSTUB_ERR_INTERNAL_ERROR    (-4)
-/** Error code - internal error (bug in the library). */
+/** Error code - the GDB peer disconnected. */
 #define GDBSTUB_ERR_PEER_DISCONNECTED (-5)
+/** Error code - the action is not supported. */
+#define GDBSTUB_ERR_NOT_SUPPORTED     (-6)
 
 
 /**
@@ -66,6 +68,42 @@ typedef enum GDBSTUBTGTSTATE
     /** 32bit hack. */
     GDBSTUBTGTSTATE_32BIT_HACK = 0x7fffffff
 } GDBSTUBTGTSTATE;
+
+
+/**
+ * Trace point type.
+ */
+typedef enum GDBSTUBTPTYPE
+{
+    /** Invalid type, do not use. */
+    GDBSTUBTPTYPE_INVALID = 0,
+    /** An instruction software trace point. */
+    GDBSTUBTPTYPE_EXEC_SW,
+    /** An instruction hardware trace point. */
+    GDBSTUBTPTYPE_EXEC_HW,
+    /** A memory read trace point. */
+    GDBSTUBTPTYPE_MEM_READ,
+    /** A memory write trace point. */
+    GDBSTUBTPTYPE_MEM_WRITE,
+    /** A memory access trace point. */
+    GDBSTUBTPTYPE_MEM_ACCESS,
+    /** 32bit hack. */
+    GDBSTUBTPTYPE_32BIT_HACK = 0x7fffffff
+} GDBSTUBTPTYPE;
+
+
+/**
+ * Trace point action.
+ */
+typedef enum GDBSTUBTPACTION
+{
+    /** Invalid action, do not use. */
+    GDBSTUBTPACTION_INVALID = 0,
+    /** Stops execution of the target and returns control to the debugger. */
+    GDBSTUBTPACTION_STOP,
+    /** @todo Dump data, execute commands, etc. */
+    GDBSTUBTPACTION_32BIT_HACK = 0x7fffffff
+} GDBSTUBTPACTION;
 
 
 /**
@@ -185,7 +223,28 @@ typedef struct GDBSTUBIF
      */
     int    (*pfnTgtRegsWrite) (GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *paRegs, uint32_t cRegs, const void *pvSrc);
 
-    /** @todo breakpoint handling... */
+    /**
+     * Sets a new trace point at the given address - optional.
+     *
+     * @returns Status code.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the callback.
+     * @param   pvUser              Opaque user data passed during creation of the stub context.
+     * @param   GdbTgtTpAddr        The target address space memory address to set the trace point at.
+     * @param   enmTpType           The tracepoint type (working on instructions or memory accesses).
+     * @param   enmTpAction         The action to execute if the tracepoint is hit.
+     */
+    int    (*pfnTgtTpSet) (GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMADDR GdbTgtTpAddr, GDBSTUBTPTYPE enmTpType, GDBSTUBTPACTION enmTpAction);
+
+    /**
+     * Clears a previously set trace point at the given address - optional.
+     *
+     * @returns Status code.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the callback.
+     * @param   pvUser              Opaque user data passed during creation of the stub context.
+     * @param   GdbTgtTpAddr        The target address space memory address to remove the trace point from.
+     */
+    int    (*pfnTgtTpClear) (GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMADDR GdbTgtTpAddr);
+
 } GDBSTUBIF;
 /** Pointer to a interface callback table. */
 typedef GDBSTUBIF *PGDBSTUBIF;
