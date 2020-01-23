@@ -1159,13 +1159,6 @@ static int gdbStubCtxPktBufProcess(PGDBSTUBCTXINT pThis, size_t cbData)
         cbData -= cbProcessed;
     }
 
-    if (   gdbStubCtxIfTgtGetState(pThis) == GDBSTUBTGTSTATE_STOPPED
-        && pThis->enmTgtStateLast != GDBSTUBTGTSTATE_STOPPED)
-    {
-        rc = gdbStubCtxReplySendSigTrap(pThis);
-        pThis->enmTgtStateLast = GDBSTUBTGTSTATE_STOPPED;
-    }
-
     return rc;
 }
 
@@ -1179,6 +1172,13 @@ static int gdbStubCtxPktBufProcess(PGDBSTUBCTXINT pThis, size_t cbData)
 static int gdbStubCtxRecv(PGDBSTUBCTXINT pThis)
 {
     int rc = GDBSTUB_INF_SUCCESS;
+
+    GDBSTUBTGTSTATE enmTgtState = gdbStubCtxIfTgtGetState(pThis);
+    if (   enmTgtState == GDBSTUBTGTSTATE_STOPPED
+        && pThis->enmTgtStateLast != GDBSTUBTGTSTATE_STOPPED)
+        rc = gdbStubCtxReplySendSigTrap(pThis);
+
+    pThis->enmTgtStateLast = enmTgtState;
 
     while (rc == GDBSTUB_INF_SUCCESS)
     {
