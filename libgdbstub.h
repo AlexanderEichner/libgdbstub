@@ -39,19 +39,39 @@ typedef struct GDBSTUBCTXINT *GDBSTUBCTX;
 typedef GDBSTUBCTX *PGDBSTUBCTX;
 
 /** Informational status code - success. */
-#define GDBSTUB_INF_SUCCESS           (0)
+#define GDBSTUB_INF_SUCCESS            (0)
 /** Error code - invalid parameter. */
-#define GDBSTUB_ERR_INVALID_PARAMETER (-1)
+#define GDBSTUB_ERR_INVALID_PARAMETER  (-1)
 /** Error code - out of memory. */
-#define GDBSTUB_ERR_NO_MEMORY         (-2)
+#define GDBSTUB_ERR_NO_MEMORY          (-2)
 /** Informational status code - no data available */
-#define GDBSTUB_INF_TRY_AGAIN         (3)
+#define GDBSTUB_INF_TRY_AGAIN          (3)
 /** Error code - internal error (bug in the library). */
-#define GDBSTUB_ERR_INTERNAL_ERROR    (-4)
+#define GDBSTUB_ERR_INTERNAL_ERROR     (-4)
 /** Error code - the GDB peer disconnected. */
-#define GDBSTUB_ERR_PEER_DISCONNECTED (-5)
+#define GDBSTUB_ERR_PEER_DISCONNECTED  (-5)
 /** Error code - the action is not supported. */
-#define GDBSTUB_ERR_NOT_SUPPORTED     (-6)
+#define GDBSTUB_ERR_NOT_SUPPORTED      (-6)
+/** Error code - protocol error. */
+#define GDBSTUB_ERR_PROTOCOL_VIOLATION (-7)
+
+
+/**
+ * The stub target architecture.
+ */
+typedef enum GDBSTUBTGTARCH
+{
+    /** Invalid architecture, do not use. */
+    GDBSTUBTGTARCH_INVALID = 0,
+    /** ARM architecture. */
+    GDBSTUBTGTARCH_ARM,
+    /** x86 architecture. */
+    GDBSTUBTGTARCH_X86,
+    /** x86-64 (amd64) architecture. */
+    GDBSTUBTGTARCH_AMD64,
+    /** 32bit hack. */
+    GDBSTUBTGTARCH_32BIT_HACK = 0x7fffffff
+} GDBSTUBTGTARCH;
 
 
 /**
@@ -111,10 +131,12 @@ typedef enum GDBSTUBTPACTION
  */
 typedef struct GDBSTUBIF
 {
+    /** Architecture supported by this interface. */
+    GDBSTUBTGTARCH              enmArch;
     /** Register size in bytes. */
-    uint32_t   cbReg;
+    uint32_t                    cbReg;
     /** Register names for the target (the index will be used by the getter/setter callbacks), ended by a NULL entry. */
-    const char **papszRegs;
+    const char                  **papszRegs;
 
     /**
      * Allocate memory.

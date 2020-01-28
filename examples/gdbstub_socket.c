@@ -75,7 +75,7 @@ static const char *g_apszGdbStubRegs[] =
     "sp",
     "lr",
     "pc",
-/*    "cpsr",*/
+    "cpsr",
     NULL
 };
 
@@ -169,12 +169,7 @@ static int gdbStubIfTgtRegsRead(GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *
     uint32_t *pau32Regs = (uint32_t *)pvDst;
 
     for (uint32_t i = 0; i < cRegs; i++)
-    {
-        if (paRegs[i] == 0x19)
-            *pau32Regs++ = 0xdeadbeef; /* XXX To get CPSR */
-        else
             *pau32Regs++ = paRegs[i];
-    }
 
     return GDBSTUB_INF_SUCCESS;
 }
@@ -216,6 +211,8 @@ static int gdbStubIfTgtTpClear(GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMAD
  */
 const GDBSTUBIF g_GdbStubIf =
 {
+    /** enmArch */
+    GDBSTUBTGTARCH_ARM,
     /** cbReg */
     sizeof(uint32_t),
     /** papszRegs */
