@@ -144,6 +144,28 @@ typedef const GDBSTUBQPKTPROC *PCGDBSTUBQPKTPROC;
 
 
 /**
+ * 'v' packet processor.
+ */
+typedef struct GDBSTUBVPKTPROC
+{
+    /** Name */
+    const char                  *pszName;
+    /** Length of name in characters (without \0 terminator). */
+    uint32_t                    cchName;
+    /** Replay to a query packet (ends with ?). */
+    const char                  *pszReplyQ;
+    /** Length of the query reply (without \0 terminator). */
+    uint32_t                    cchReplyQ;
+    /** The callback to call for processing the particular query. */
+    PFNGDBSTUBQPKTPROC          pfnProc;
+} GDBSTUBVPKTPROC;
+/** Pointer to a 'q' packet processor entry. */
+typedef GDBSTUBVPKTPROC *PGDBSTUBVPKTPROC;
+/** Pointer to a const 'q' packet processor entry. */
+typedef const GDBSTUBVPKTPROC *PCGDBSTUBVPKTPROC;
+
+
+/**
  * Feature callback.
  *
  * @returns Status code.
@@ -1275,6 +1297,116 @@ static int gdbStubCtxPktProcessQuery(PGDBSTUBCTXINT pThis, const uint8_t *pbQuer
 
 
 /**
+ * Processes a 'vCont[;action[:thread-id]]' packet.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbArgs              Pointer to the start of the arguments in the packet.
+ * @param   cbArgs              Size of arguments in bytes.
+ */
+static int gdbStubCtxPktProcessVCont(PGDBSTUBCTXINT pThis, const uint8_t *pbArgs, size_t cbArgs)
+{
+    int rc = GDBSTUB_INF_SUCCESS;
+
+    /* Skip the ; following the identifier. */
+    if (   cbArgs < 2
+        || pbArgs[0] != ';')
+        return gdbStubCtxReplySendErrSts(pThis, GDBSTUB_ERR_PROTOCOL_VIOLATION);
+
+    pbArgs++;
+    cbArgs--;
+
+    /** @todo For now we don't care about multiple threads and ignore thread IDs and multiple actions. */
+    switch (pbArgs[0])
+    {
+        case 'c':
+        {
+            rc = gdbStubCtxIfTgtContinue(pThis);
+            if (rc == GDBSTUB_INF_SUCCESS)
+                pThis->enmTgtStateLast = GDBSTUBTGTSTATE_RUNNING;
+            break;
+        }
+        case 's':
+        {
+            rc = gdbStubCtxIfTgtStep(pThis);
+            if (rc == GDBSTUB_INF_SUCCESS)
+                rc = gdbStubCtxReplySendSigTrap(pThis);
+            break;
+        }
+        case 't':
+        {
+            rc = gdbStubCtxIfTgtStop(pThis);
+            if (rc == GDBSTUB_INF_SUCCESS)
+                rc = gdbStubCtxReplySendSigTrap(pThis);
+            break;
+        }
+        default:
+            rc = gdbStubCtxReplySendErrSts(pThis, GDBSTUB_ERR_PROTOCOL_VIOLATION);
+    }
+
+    return rc;
+}
+
+
+/**
+ * List of supported 'v<identifier>' packets.
+ */
+static const GDBSTUBVPKTPROC g_aVPktProcs[] =
+{
+#define GDBSTUBVPKTPROC_INIT(a_Name, a_pszReply, a_pfnProc) { a_Name, sizeof(a_Name) - 1, a_pszReply, sizeof(a_pszReply) - 1, a_pfnProc }
+    GDBSTUBVPKTPROC_INIT("Cont", "vCont;s;c;t", gdbStubCtxPktProcessVCont)
+#undef GDBSTUBVPKTPROC_INIT
+};
+
+
+/**
+ * Processes a 'v<identifier>' packet, sending the appropriate reply.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbPktRem            The remaining packet data (without the 'v').
+ * @param   cbPktRem            Size of the remaining packet in bytes.
+ */
+static int gdbStubCtxPktProcessV(PGDBSTUBCTXINT pThis, const uint8_t *pbPktRem, size_t cbPktRem)
+{
+    int rc = GDBSTUB_INF_SUCCESS;
+
+    /* Determine the end of the identifier, delimiters are '?', ';' or end of packet. */
+    bool fQuery = false;
+    const uint8_t *pbDelim = gdbStubCtxMemchr(pbPktRem, '?', cbPktRem);
+    if (!pbDelim)
+        pbDelim = gdbStubCtxMemchr(pbPktRem, ';', cbPktRem);
+    else
+        fQuery = true;
+
+    size_t cchId = 0;
+    if (pbDelim) /* Delimiter found, calculate length. */
+        cchId = pbDelim - pbPktRem;
+    else /* Not found, size goes till end of packet. */
+        cchId = cbPktRem;
+
+    /* Search the query and execute the processor or return an empty reply if not supported. */
+    for (uint32_t i = 0; i < ELEMENTS(g_aVPktProcs); i++)
+    {
+        PCGDBSTUBVPKTPROC pVProc = &g_aVPktProcs[i];
+
+        if (   pVProc->cchName == cchId
+            && !gdbStubMemcmp(pbPktRem, pVProc->pszName, cchId))
+        {
+            /* Just send the static reply for a query and execute the processor for everything else. */
+            if (fQuery)
+                return gdbStubCtxReplySend(pThis, pVProc->pszReplyQ, pVProc->cchReplyQ);
+
+            /* Execute the handler. */
+            return pVProc->pfnProc(pThis, pbPktRem + cchId, cbPktRem - cchId);
+        }
+    }
+
+    return gdbStubCtxReplySend(pThis, NULL, 0);
+}
+
+
+/**
  * Processes a completely received packet.
  *
  * @returns Status code.
@@ -1468,6 +1600,11 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
             case 'q': /* Query packet */
             {
                 rc = gdbStubCtxPktProcessQuery(pThis, &pThis->pbPktBuf[2], pThis->cbPkt - 1);
+                break;
+            }
+            case 'v': /* Multiletter identifier (verbose?) */
+            {
+                rc = gdbStubCtxPktProcessV(pThis, &pThis->pbPktBuf[2], pThis->cbPkt - 1);
                 break;
             }
             default:
