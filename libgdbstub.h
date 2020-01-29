@@ -127,16 +127,55 @@ typedef enum GDBSTUBTPACTION
 
 
 /**
+ * Register type.
+ */
+typedef enum GDBSTUBREGTYPE
+{
+    /** Invalid type, do not use. */
+    GDBSTUBREGTYPE_INVALID = 0,
+    /** General purpose register. */
+    GDBSTUBREGTYPE_GP,
+    /** Program counter. */
+    GDBSTUBREGTYPE_PC,
+    /** Stack pointer. */
+    GDBSTUBREGTYPE_STACK_PTR,
+    /** Code pointer. */
+    GDBSTUBREGTYPE_CODE_PTR,
+    /** Status register. */
+    GDBSTUBREGTYPE_STATUS,
+    /** 32bit hack. */
+    GDBSTUBREGTYPE_32BIT_HACK = 0x7fffffff
+} GDBSTUBREGTYPE;
+
+
+/**
+ * A register entry.
+ */
+typedef struct GDBSTUBREG
+{
+    /** Register name. */
+    const char                  *pszName;
+    /** Register bitsize. */
+    uint32_t                    cRegBits;
+    /** Register type. */
+    GDBSTUBREGTYPE              enmType;
+} GDBSTUBREG;
+/** Pointer to a register entry. */
+typedef GDBSTUBREG *PGDBSTUBREG;
+/** Pointer to a const register entry. */
+typedef const GDBSTUBREG *PCGDBSTUBREG;
+
+
+/**
  * GDB stub interface callback table.
  */
 typedef struct GDBSTUBIF
 {
     /** Architecture supported by this interface. */
     GDBSTUBTGTARCH              enmArch;
-    /** Register size in bytes. */
-    uint32_t                    cbReg;
-    /** Register names for the target (the index will be used by the getter/setter callbacks), ended by a NULL entry. */
-    const char                  **papszRegs;
+    /** Register entries for the target (the index will be used by the getter/setter callbacks),
+     * ended by an entry with a NULL name and 0 register bit size. */
+    PCGDBSTUBREG                paRegs;
 
     /**
      * Allocate memory.

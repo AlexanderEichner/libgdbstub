@@ -96,6 +96,8 @@ typedef struct GDBSTUBCTXINT
     GDBSTUBTGTSTATE             enmTgtStateLast;
     /** Number of registers this architecture has. */
     uint32_t                    cRegs;
+    /** Overall size to return all registers. */
+    size_t                      cbRegs;
     /** Register scratch space (for reading writing registers). */
     void                        *pvRegsScratch;
     /** Register index array for querying setting. */
@@ -1130,9 +1132,9 @@ static int gdbStubCtxTgtXmlDescCreate(PGDBSTUBCTXINT pThis)
     /* Add the length for each register. */
     for (uint32_t i = 0; i < pThis->cRegs; i++)
     {
-        size_t cchRegName = gdbStubStrlen(pThis->pIf->papszRegs[i]);
+        size_t cchRegName = gdbStubStrlen(pThis->pIf->paRegs[i].pszName);
         cbXmlTgtDesc +=   (sizeof("<reg name=\"\" bitsize=\"\"/>\n") - 1)
-                        + cchRegName + 2; /* Two characters for bitsize. */
+                        + cchRegName + 2; /* Up to two characters for bitsize for now. */
     }
 
     pThis->pbTgtXmlDesc = (uint8_t *)gdbStubCtxIfMemAlloc(pThis, cbXmlTgtDesc);
@@ -1164,23 +1166,22 @@ static int gdbStubCtxTgtXmlDescCreate(PGDBSTUBCTXINT pThis)
         gdbStubCtxMemcpy(pbXmlCur, "\">\n", sizeof("\">\n") - 1);
         pbXmlCur += sizeof("\">\n") - 1;
 
-        size_t cRegBits = pThis->pIf->cbReg * 8;
         /* Register */
         for (uint32_t i = 0; i < pThis->cRegs; i++)
         {
-            size_t cchRegName = gdbStubStrlen(pThis->pIf->papszRegs[i]);
+            size_t cchRegName = gdbStubStrlen(pThis->pIf->paRegs[i].pszName);
 
             gdbStubCtxMemcpy(pbXmlCur, "<reg name=\"", sizeof("<reg name=\"") - 1);
             pbXmlCur += sizeof("<reg name=\"") - 1;
 
-            gdbStubCtxMemcpy(pbXmlCur, pThis->pIf->papszRegs[i], cchRegName);
+            gdbStubCtxMemcpy(pbXmlCur, pThis->pIf->paRegs[i].pszName, cchRegName);
             pbXmlCur += cchRegName;
 
             gdbStubCtxMemcpy(pbXmlCur, "\" bitsize=\"", sizeof("\" bitsize=\"") - 1);
             pbXmlCur += sizeof("\" bitsize=\"") - 1;
 
-            *pbXmlCur++ = '0' + (cRegBits / 10);
-            *pbXmlCur++ = '0' + (cRegBits % 10);
+            *pbXmlCur++ = '0' + (pThis->pIf->paRegs[i].cRegBits / 10);
+            *pbXmlCur++ = '0' + (pThis->pIf->paRegs[i].cRegBits % 10);
 
             gdbStubCtxMemcpy(pbXmlCur, "\"/>\n", sizeof("\"/>\n") - 1);
             pbXmlCur += sizeof("\"/>\n") - 1;
@@ -1445,13 +1446,13 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                 rc = gdbStubCtxIfTgtRegsRead(pThis, pThis->paidxRegs, pThis->cRegs, pThis->pvRegsScratch);
                 if (rc == GDBSTUB_INF_SUCCESS)
                 {
-                    size_t cbReplyPkt = pThis->cRegs * pThis->pIf->cbReg * 2; /* One byte needs two characters. */
+                    size_t cbReplyPkt = pThis->cbRegs * 2; /* One byte needs two characters. */
 
                     /* Encode data and send. */
                     rc = gdbStubCtxEnsurePktBufSpace(pThis, cbReplyPkt);
                     if (rc == GDBSTUB_INF_SUCCESS)
                     {
-                        rc = gdbStubCtxEncodeBinaryAsHex(pThis->pbPktBuf, pThis->cbPktBufMax, pThis->pvRegsScratch, pThis->cRegs * pThis->pIf->cbReg);
+                        rc = gdbStubCtxEncodeBinaryAsHex(pThis->pbPktBuf, pThis->cbPktBufMax, pThis->pvRegsScratch, pThis->cbRegs);
                         if (rc == GDBSTUB_INF_SUCCESS)
                             rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbReplyPkt);
                         else
@@ -1530,18 +1531,24 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                 {
                     uint32_t idxReg = (uint32_t)uReg;
 
-                    rc = gdbStubCtxIfTgtRegsRead(pThis, &idxReg, 1, pThis->pvRegsScratch);
-                    if (rc == GDBSTUB_INF_SUCCESS)
+                    if (idxReg < pThis->cRegs)
                     {
-                        size_t cbReplyPkt = pThis->pIf->cbReg * 2; /* One byte needs two characters. */
-
-                        /* Encode data and send. */
-                        rc = gdbStubCtxEnsurePktBufSpace(pThis, cbReplyPkt);
+                        rc = gdbStubCtxIfTgtRegsRead(pThis, &idxReg, 1, pThis->pvRegsScratch);
                         if (rc == GDBSTUB_INF_SUCCESS)
                         {
-                            rc = gdbStubCtxEncodeBinaryAsHex(pThis->pbPktBuf, pThis->cbPktBufMax, pThis->pvRegsScratch, pThis->pIf->cbReg);
+                            size_t cbReg = pThis->pIf->paRegs[idxReg].cRegBits / 8;
+                            size_t cbReplyPkt = cbReg * 2; /* One byte needs two characters. */
+
+                            /* Encode data and send. */
+                            rc = gdbStubCtxEnsurePktBufSpace(pThis, cbReplyPkt);
                             if (rc == GDBSTUB_INF_SUCCESS)
-                                rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbReplyPkt);
+                            {
+                                rc = gdbStubCtxEncodeBinaryAsHex(pThis->pbPktBuf, pThis->cbPktBufMax, pThis->pvRegsScratch, cbReg);
+                                if (rc == GDBSTUB_INF_SUCCESS)
+                                    rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbReplyPkt);
+                                else
+                                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                            }
                             else
                                 rc = gdbStubCtxReplySendErrSts(pThis, rc);
                         }
@@ -1549,7 +1556,7 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                             rc = gdbStubCtxReplySendErrSts(pThis, rc);
                     }
                     else
-                        rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                        rc = gdbStubCtxReplySendErrSts(pThis, GDBSTUB_ERR_PROTOCOL_VIOLATION);
                 }
                 else
                     rc = gdbStubCtxReplySendErrSts(pThis, rc);
@@ -1885,17 +1892,22 @@ int GDBStubCtxCreate(PGDBSTUBCTX phCtx, PCGDBSTUBIOIF pIoIf, PCGDBSTUBIF pIf, vo
         pThis->cbTgtXmlDesc    = 0;
 
         uint32_t cRegs = 0;
-        while (pIf->papszRegs[cRegs] != NULL)
+        size_t cbRegs = 0;
+        while (pIf->paRegs[cRegs].pszName != NULL)
+        {
+            cbRegs += pIf->paRegs[cRegs].cRegBits / 8;
             cRegs++;
+        }
 
         pThis->cRegs = cRegs;
+        pThis->cbRegs = cbRegs;
 
         /* Allocate scratch space for register content and index array. */
-        void *pvRegsScratch = gdbStubCtxIfMemAlloc(pThis, cRegs * pIf->cbReg + cRegs * sizeof(uint32_t));
+        void *pvRegsScratch = gdbStubCtxIfMemAlloc(pThis, cRegs * cbRegs + cRegs * sizeof(uint32_t));
         if (pvRegsScratch)
         {
             pThis->pvRegsScratch = pvRegsScratch;
-            pThis->paidxRegs     = (uint32_t *)((uint8_t *)pvRegsScratch + (cRegs * pIf->cbReg));
+            pThis->paidxRegs     = (uint32_t *)((uint8_t *)pvRegsScratch + (cRegs * cbRegs));
 
             /* GDB always sets or queries all registers so we can statically initialize the index array. */
             for (uint32_t i = 0; i < pThis->cRegs; i++)

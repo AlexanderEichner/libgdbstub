@@ -57,26 +57,26 @@ typedef const GDBSOCKSTUB *PCGDBSOCKSTUB;
 /**
  * GDB stub register names (for ARM).
  */
-static const char *g_apszGdbStubRegs[] =
+static const GDBSTUBREG g_aGdbStubRegs[] =
 {
-    "r0",
-    "r1",
-    "r2",
-    "r3",
-    "r4",
-    "r5",
-    "r6",
-    "r7",
-    "r8",
-    "r9",
-    "r10",
-    "r11",
-    "r12",
-    "sp",
-    "lr",
-    "pc",
-    "cpsr",
-    NULL
+    { "r0",   32, GDBSTUBREGTYPE_GP        },
+    { "r1",   32, GDBSTUBREGTYPE_GP        },
+    { "r2",   32, GDBSTUBREGTYPE_GP        },
+    { "r3",   32, GDBSTUBREGTYPE_GP        },
+    { "r4",   32, GDBSTUBREGTYPE_GP        },
+    { "r5",   32, GDBSTUBREGTYPE_GP        },
+    { "r6",   32, GDBSTUBREGTYPE_GP        },
+    { "r7",   32, GDBSTUBREGTYPE_GP        },
+    { "r8",   32, GDBSTUBREGTYPE_GP        },
+    { "r9",   32, GDBSTUBREGTYPE_GP        },
+    { "r10",  32, GDBSTUBREGTYPE_GP        },
+    { "r11",  32, GDBSTUBREGTYPE_GP        },
+    { "r12",  32, GDBSTUBREGTYPE_GP        },
+    { "sp",   32, GDBSTUBREGTYPE_STACK_PTR },
+    { "lr",   32, GDBSTUBREGTYPE_CODE_PTR  },
+    { "pc",   32, GDBSTUBREGTYPE_PC        },
+    { "cpsr", 32, GDBSTUBREGTYPE_STATUS    },
+    { NULL,    0, GDBSTUBREGTYPE_INVALID   }
 };
 
 
@@ -118,6 +118,7 @@ static GDBSTUBTGTSTATE gdbStubIfTgtGetState(GDBSTUBCTX hGdbStubCtx, void *pvUser
  */
 static int gdbStubIfTgtStop(GDBSTUBCTX hGdbStubCtx, void *pvUser)
 {
+    printf("gdbStubIfTgtStop: hGdbStubCtx=%p pvUser=%p\n", hGdbStubCtx, pvUser);
     return GDBSTUB_INF_SUCCESS;
 }
 
@@ -127,6 +128,7 @@ static int gdbStubIfTgtStop(GDBSTUBCTX hGdbStubCtx, void *pvUser)
  */
 static int gdbStubIfTgtStep(GDBSTUBCTX hGdbStubCtx, void *pvUser)
 {
+    printf("gdbStubIfTgtStep: hGdbStubCtx=%p pvUser=%p\n", hGdbStubCtx, pvUser);
     return GDBSTUB_INF_SUCCESS;
 }
 
@@ -136,6 +138,7 @@ static int gdbStubIfTgtStep(GDBSTUBCTX hGdbStubCtx, void *pvUser)
  */
 static int gdbStubIfTgtCont(GDBSTUBCTX hGdbStubCtx, void *pvUser)
 {
+    printf("gdbStubIfTgtCont: hGdbStubCtx=%p pvUser=%p\n", hGdbStubCtx, pvUser);
     return GDBSTUB_INF_SUCCESS;
 }
 
@@ -213,10 +216,8 @@ const GDBSTUBIF g_GdbStubIf =
 {
     /** enmArch */
     GDBSTUBTGTARCH_ARM,
-    /** cbReg */
-    sizeof(uint32_t),
-    /** papszRegs */
-    &g_apszGdbStubRegs[0],
+    /** paRegs */
+    &g_aGdbStubRegs[0],
     /** pfnMemAlloc */
     gdbStubIfMemAlloc,
     /** pfnMemFree */
