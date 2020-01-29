@@ -1132,9 +1132,19 @@ static int gdbStubCtxTgtXmlDescCreate(PGDBSTUBCTXINT pThis)
     /* Add the length for each register. */
     for (uint32_t i = 0; i < pThis->cRegs; i++)
     {
-        size_t cchRegName = gdbStubStrlen(pThis->pIf->paRegs[i].pszName);
+        PCGDBSTUBREG pReg = &pThis->pIf->paRegs[i];
+
+        size_t cchRegName = gdbStubStrlen(pReg->pszName);
         cbXmlTgtDesc +=   (sizeof("<reg name=\"\" bitsize=\"\"/>\n") - 1)
                         + cchRegName + 2; /* Up to two characters for bitsize for now. */
+
+        if (   pReg->enmType == GDBSTUBREGTYPE_PC
+            || pReg->enmType == GDBSTUBREGTYPE_STACK_PTR
+            || pReg->enmType == GDBSTUBREGTYPE_CODE_PTR)
+        {
+            size_t cchTypeName = pReg->enmType == GDBSTUBREGTYPE_STACK_PTR ? sizeof("data_ptr") - 1 : sizeof("code_ptr") - 1;
+            cbXmlTgtDesc += sizeof(" type=\"\"") + cchTypeName - 1;
+        }
     }
 
     pThis->pbTgtXmlDesc = (uint8_t *)gdbStubCtxIfMemAlloc(pThis, cbXmlTgtDesc);
@@ -1169,19 +1179,34 @@ static int gdbStubCtxTgtXmlDescCreate(PGDBSTUBCTXINT pThis)
         /* Register */
         for (uint32_t i = 0; i < pThis->cRegs; i++)
         {
-            size_t cchRegName = gdbStubStrlen(pThis->pIf->paRegs[i].pszName);
+            PCGDBSTUBREG pReg = &pThis->pIf->paRegs[i];
+            size_t cchRegName = gdbStubStrlen(pReg->pszName);
 
             gdbStubCtxMemcpy(pbXmlCur, "<reg name=\"", sizeof("<reg name=\"") - 1);
             pbXmlCur += sizeof("<reg name=\"") - 1;
 
-            gdbStubCtxMemcpy(pbXmlCur, pThis->pIf->paRegs[i].pszName, cchRegName);
+            gdbStubCtxMemcpy(pbXmlCur, pReg->pszName, cchRegName);
             pbXmlCur += cchRegName;
 
             gdbStubCtxMemcpy(pbXmlCur, "\" bitsize=\"", sizeof("\" bitsize=\"") - 1);
             pbXmlCur += sizeof("\" bitsize=\"") - 1;
 
-            *pbXmlCur++ = '0' + (pThis->pIf->paRegs[i].cRegBits / 10);
-            *pbXmlCur++ = '0' + (pThis->pIf->paRegs[i].cRegBits % 10);
+            *pbXmlCur++ = '0' + (pReg->cRegBits / 10);
+            *pbXmlCur++ = '0' + (pReg->cRegBits % 10);
+
+            if (   pReg->enmType == GDBSTUBREGTYPE_PC
+                || pReg->enmType == GDBSTUBREGTYPE_STACK_PTR
+                || pReg->enmType == GDBSTUBREGTYPE_CODE_PTR)
+            {
+                size_t cchTypeName = pReg->enmType == GDBSTUBREGTYPE_STACK_PTR ? sizeof("data_ptr") - 1 : sizeof("code_ptr") - 1;
+                const char *pszTypeName = pReg->enmType == GDBSTUBREGTYPE_STACK_PTR ? "data_ptr" : "code_ptr";
+
+                gdbStubCtxMemcpy(pbXmlCur, "\" type=\"", sizeof("\" type=\"") - 1);
+                pbXmlCur += sizeof("\" type=\"") - 1;
+
+                gdbStubCtxMemcpy(pbXmlCur, pszTypeName, cchTypeName);
+                pbXmlCur += cchTypeName;
+            }
 
             gdbStubCtxMemcpy(pbXmlCur, "\"/>\n", sizeof("\"/>\n") - 1);
             pbXmlCur += sizeof("\"/>\n") - 1;
