@@ -183,6 +183,8 @@ static int gdbStubIfTgtRegsRead(GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *
  */
 static int gdbStubIfTgtRegsWrite(GDBSTUBCTX hGdbStubCtx, void *pvUser, uint32_t *paRegs, uint32_t cRegs, const void *pvSrc)
 {
+    printf("gdbStubIfTgtRegsWrite: hGdbStubCtx=%p pvUser=%p paRegs=%p cRegs=%u pvSrc=%p\n",
+           hGdbStubCtx, pvUser, paRegs, cRegs, pvSrc);
     return GDBSTUB_INF_SUCCESS;
 }
 

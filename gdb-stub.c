@@ -298,7 +298,7 @@ static inline int gdbStubCtxIfTgtContinue(PGDBSTUBCTXINT pThis)
 
 
 /**
- * Wrapper for the interface target read registers callback.
+ * Wrapper for the interface target read memory callback.
  *
  * @returns Status code.
  * @param   pThis               The GDB stub context.
@@ -309,6 +309,21 @@ static inline int gdbStubCtxIfTgtContinue(PGDBSTUBCTXINT pThis)
 static inline int gdbStubCtxIfTgtMemRead(PGDBSTUBCTXINT pThis, GDBTGTMEMADDR GdbTgtMemAddr, void *pvDst, size_t cbRead)
 {
     return pThis->pIf->pfnTgtMemRead(pThis, pThis->pvUser, GdbTgtMemAddr, pvDst, cbRead);
+}
+
+
+/**
+ * Wrapper for the interface target write memory callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   GdbTgtMemAddr       The target memory address to write to.
+ * @param   pvSrc               The data to write.
+ * @param   cbWrite             Number of bytes to write.
+ */
+static inline int gdbStubCtxIfTgtMemWrite(PGDBSTUBCTXINT pThis, GDBTGTMEMADDR GdbTgtMemAddr, void *pvSrc, size_t cbWrite)
+{
+    return pThis->pIf->pfnTgtMemWrite(pThis, pThis->pvUser, GdbTgtMemAddr, pvSrc, cbWrite);
 }
 
 
@@ -325,6 +340,22 @@ static inline int gdbStubCtxIfTgtMemRead(PGDBSTUBCTXINT pThis, GDBTGTMEMADDR Gdb
 static inline int gdbStubCtxIfTgtRegsRead(PGDBSTUBCTXINT pThis, uint32_t *paRegs, uint32_t cRegs, void *pvDst)
 {
     return pThis->pIf->pfnTgtRegsRead(pThis, pThis->pvUser, paRegs, cRegs, pvDst);
+}
+
+
+/**
+ * Wrapper for the interface target write registers callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   paRegs              Register indizes to write.
+ * @param   cRegs               Number of registers to write.
+ * @param   pvSrc               The register content to write (caller makes sure there is enough space
+ *                              to store cRegs * GDBSTUBIF::cbReg bytes of data).
+ */
+static inline int gdbStubCtxIfTgtRegsWrite(PGDBSTUBCTXINT pThis, uint32_t *paRegs, uint32_t cRegs, void *pvSrc)
+{
+    return pThis->pIf->pfnTgtRegsWrite(pThis, pThis->pvUser, paRegs, cRegs, pvSrc);
 }
 
 
@@ -626,6 +657,42 @@ static int gdbStubCtxParseHexStringAsInteger(const uint8_t *pbBuf, size_t cbBuf,
 
     if (ppbSep)
         *ppbSep = pbBuf;
+
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
+ * Decodes the given ASCII hexstring as a byte buffer up until the given separator is found or the end of the string is reached.
+ *
+ * @returns Status code.
+ * @param   pbBuf               The buffer containing the hexstring to convert.
+ * @param   cbBuf               Size of the buffer in bytes.
+ * @param   pvDst               Where to store the decoded data.
+ * @param   cbDst               Maximum buffer size in bytes.
+ * @param   pcbDecoded          Where to store the number of consumed bytes from the input.
+ */
+static int gdbStubCtxParseHexStringAsByteBuf(const uint8_t *pbBuf, size_t cbBuf, void *pvDst, size_t cbDst, size_t *pcbDecoded)
+{
+    size_t cbDecode = MIN(cbBuf, cbDst * 2);
+
+    /* A single byte is constructed from two hex digits. */
+    if (cbDecode % 2 != 0)
+        return GDBSTUB_ERR_INVALID_PARAMETER;
+
+    if (pcbDecoded)
+        *pcbDecoded = cbDecode;
+
+    uint8_t *pbDst = (uint8_t *)pvDst;
+    while (   cbBuf
+           && cbDst)
+    {
+        uint8_t bByte = (gdbStubCtxChrToHex(*pbBuf) << 4) | gdbStubCtxChrToHex(*(pbBuf + 1));
+        *pbDst++ = bByte;
+        pbBuf += 2;
+        cbBuf -= 2;
+        cbDst--;
+    }
 
     return GDBSTUB_INF_SUCCESS;
 }
@@ -1547,6 +1614,53 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                     rc = gdbStubCtxReplySendErrSts(pThis, rc);
                 break;
             }
+            case 'M': /* Write memory. */
+            {
+                GDBTGTMEMADDR GdbTgtAddr = 0;
+                const uint8_t *pbPktSep = NULL;
+
+                int rc = gdbStubCtxParseHexStringAsInteger(&pThis->pbPktBuf[2], pThis->cbPkt - 1, &GdbTgtAddr,
+                                                           ',', &pbPktSep);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                {
+                    size_t cbProcessed = pbPktSep - &pThis->pbPktBuf[2];
+                    size_t cbWrite = 0;
+                    rc = gdbStubCtxParseHexStringAsInteger(pbPktSep + 1, pThis->cbPkt - 1 - cbProcessed - 1, &cbWrite, ':', &pbPktSep);
+                    if (rc == GDBSTUB_INF_SUCCESS)
+                    {
+                        cbProcessed = pbPktSep - &pThis->pbPktBuf[2];
+                        const uint8_t *pbDataCur = pbPktSep + 1;
+                        size_t cbDataLeft = pThis->cbPkt - 1 - cbProcessed - 1 - 1;
+
+                        while (   cbWrite
+                               && !rc)
+                        {
+                            uint8_t abTmp[4096];
+                            size_t cbThisWrite = MIN(cbWrite, sizeof(abTmp));
+                            size_t cbDecoded = 0;
+
+                            rc = gdbStubCtxParseHexStringAsByteBuf(pbDataCur, cbDataLeft, &abTmp[0], cbThisWrite, &cbDecoded);
+                            if (!rc)
+                                rc = gdbStubCtxIfTgtMemWrite(pThis, GdbTgtAddr, &abTmp[0], cbThisWrite);
+
+                            GdbTgtAddr += cbThisWrite;
+                            cbWrite    -= cbThisWrite;
+                            pbDataCur  += cbDecoded;
+                            cbDataLeft -= cbDecoded;
+                        }
+
+                        if (rc == GDBSTUB_INF_SUCCESS)
+                            rc = gdbStubCtxReplySendOk(pThis);
+                        else
+                            rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                    }
+                    else
+                        rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                }
+                else
+                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                break;
+            }
             case 'p': /* Read a single register */
             {
                 uint64_t uReg = 0;
@@ -1579,6 +1693,39 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
                         }
                         else
                             rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                    }
+                    else
+                        rc = gdbStubCtxReplySendErrSts(pThis, GDBSTUB_ERR_PROTOCOL_VIOLATION);
+                }
+                else
+                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                break;
+            }
+            case 'P': /* Write a single register */
+            {
+                uint64_t uReg = 0;
+                const uint8_t *pbPktSep = NULL;
+                int rc = gdbStubCtxParseHexStringAsInteger(&pThis->pbPktBuf[2], pThis->cbPkt - 1, &uReg,
+                                                           '=', &pbPktSep);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                {
+                    uint32_t idxReg = (uint32_t)uReg;
+
+                    if (idxReg < pThis->cRegs)
+                    {
+                        size_t cbProcessed = pbPktSep - &pThis->pbPktBuf[2];
+                        uint32_t u32RegVal = 0;
+                        rc = gdbStubCtxParseHexStringAsByteBuf(pbPktSep + 1, pThis->cbPkt - 1 - cbProcessed - 1, &u32RegVal, sizeof(u32RegVal), NULL);
+                        if (rc == GDBSTUB_INF_SUCCESS)
+                        {
+                            rc = gdbStubCtxIfTgtRegsWrite(pThis, &idxReg, 1, &u32RegVal);
+                            if (rc == GDBSTUB_INF_SUCCESS)
+                                rc = gdbStubCtxReplySendOk(pThis);
+                            else if (rc == GDBSTUB_ERR_NOT_SUPPORTED)
+                                rc = gdbStubCtxReplySend(pThis, NULL, 0);
+                            else
+                                rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                        }
                     }
                     else
                         rc = gdbStubCtxReplySendErrSts(pThis, GDBSTUB_ERR_PROTOCOL_VIOLATION);
