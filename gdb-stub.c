@@ -923,8 +923,8 @@ static int gdbStubCtxPktProcessFeatXmlRegs(PGDBSTUBCTXINT pThis, const uint8_t *
             break;
         }
 
-        cbVal -= cbThisVal + 1;
-        pbVal = pbDelim + 1;
+        cbVal -= cbThisVal + pbDelim ? 1 : 0;
+        pbVal = pbDelim + pbDelim ? 1 : 0;
     }
 
     return rc;
