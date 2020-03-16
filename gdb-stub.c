@@ -108,6 +108,8 @@ typedef struct GDBSTUBCTXINT
     uint8_t                     *pbTgtXmlDesc;
     /** Size of the XML target description. */
     size_t                      cbTgtXmlDesc;
+    /** Flag whether the stub is in extended mode. */
+    bool                        fExtendedMode;
 } GDBSTUBCTXINT;
 /** Pointer to an internal PSP proxy context. */
 typedef GDBSTUBCTXINT *PGDBSTUBCTXINT;
@@ -270,6 +272,30 @@ static inline GDBSTUBTGTSTATE gdbStubCtxIfTgtGetState(PGDBSTUBCTXINT pThis)
 static inline int gdbStubCtxIfTgtStop(PGDBSTUBCTXINT pThis)
 {
     return pThis->pIf->pfnTgtStop(pThis, pThis->pvUser);
+}
+
+
+/**
+ * Wrapper for the interface target restart callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static inline int gdbStubCtxIfTgtRestart(PGDBSTUBCTXINT pThis)
+{
+    return pThis->pIf->pfnTgtRestart(pThis, pThis->pvUser);
+}
+
+
+/**
+ * Wrapper for the interface target kill callback.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static inline int gdbStubCtxIfTgtKill(PGDBSTUBCTXINT pThis)
+{
+    return pThis->pIf->pfnTgtKill(pThis, pThis->pvUser);
 }
 
 
@@ -923,8 +949,8 @@ static int gdbStubCtxPktProcessFeatXmlRegs(PGDBSTUBCTXINT pThis, const uint8_t *
             break;
         }
 
-        cbVal -= cbThisVal + pbDelim ? 1 : 0;
-        pbVal = pbDelim + pbDelim ? 1 : 0;
+        cbVal -= cbThisVal + (pbDelim ? 1 : 0);
+        pbVal = pbDelim + (pbDelim ? 1 : 0);
     }
 
     return rc;
@@ -1513,6 +1539,17 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
     {
         switch (pThis->pbPktBuf[1])
         {
+            case '!': /* Enabled extended mode. */
+            {
+                if (pThis->pIf->pfnTgtRestart)
+                {
+                    pThis->fExtendedMode = true;
+                    rc = gdbStubCtxReplySendOk(pThis);
+                }
+                else /* Send empty reply to indicate extended mode is unsupported. */
+                    rc = gdbStubCtxReplySend(pThis, NULL, 0);
+                break;
+            }
             case '?':
             {
                 /* Return signal state. */
@@ -1784,6 +1821,19 @@ static int gdbStubCtxPktProcess(PGDBSTUBCTXINT pThis)
             case 'v': /* Multiletter identifier (verbose?) */
             {
                 rc = gdbStubCtxPktProcessV(pThis, &pThis->pbPktBuf[2], pThis->cbPkt - 1);
+                break;
+            }
+            case 'R': /* Restart target. */
+            {
+                if (pThis->fExtendedMode) /* No reply if supported. */
+                    rc = gdbStubCtxIfTgtRestart(pThis);
+                else
+                    rc = gdbStubCtxReplySend(pThis, NULL, 0);
+                break;
+            }
+            case 'k': /* Kill target. */
+            {
+                rc = gdbStubCtxIfTgtKill(pThis);
                 break;
             }
             default:
@@ -2062,6 +2112,7 @@ int GDBStubCtxCreate(PGDBSTUBCTX phCtx, PCGDBSTUBIOIF pIoIf, PCGDBSTUBIF pIf, vo
         pThis->fFeatures       = GDBSTUBCTX_FEATURES_F_TGT_DESC;
         pThis->pbTgtXmlDesc    = NULL;
         pThis->cbTgtXmlDesc    = 0;
+        pThis->fExtendedMode   = false;
 
         uint32_t cRegs = 0;
         size_t cbRegs = 0;

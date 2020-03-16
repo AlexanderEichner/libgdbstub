@@ -217,6 +217,24 @@ typedef struct GDBSTUBIF
     int    (*pfnTgtStop) (GDBSTUBCTX hGdbStubCtx, void *pvUser);
 
     /**
+     * Restarts the target, optional.
+     *
+     * @returns Status code.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the callback.
+     * @param   pvUser              Opaque user data passed during creation of the stub context.
+     */
+    int    (*pfnTgtRestart) (GDBSTUBCTX hGdbStubCtx, void *pvUser);
+
+    /**
+     * Kills the target, optional.
+     *
+     * @returns Status code.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the callback.
+     * @param   pvUser              Opaque user data passed during creation of the stub context.
+     */
+    int    (*pfnTgtKill) (GDBSTUBCTX hGdbStubCtx, void *pvUser);
+
+    /**
      * Step a single instruction in the target.
      *
      * @returns Status code.

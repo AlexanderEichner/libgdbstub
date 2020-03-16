@@ -124,6 +124,26 @@ static int gdbStubIfTgtStop(GDBSTUBCTX hGdbStubCtx, void *pvUser)
 
 
 /**
+ * @copydoc{GDBSTUBIF,pfnTgtRestart}
+ */
+static int gdbStubIfTgtRestart(GDBSTUBCTX hGdbStubCtx, void *pvUser)
+{
+    printf("gdbStubIfTgtRestart: hGdbStubCtx=%p pvUser=%p\n", hGdbStubCtx, pvUser);
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
+ * @copydoc{GDBSTUBIF,pfnTgtKill}
+ */
+static int gdbStubIfTgtKill(GDBSTUBCTX hGdbStubCtx, void *pvUser)
+{
+    printf("gdbStubIfTgtKill: hGdbStubCtx=%p pvUser=%p\n", hGdbStubCtx, pvUser);
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
  * @copydoc{GDBSTUBIF,pfnTgtStep}
  */
 static int gdbStubIfTgtStep(GDBSTUBCTX hGdbStubCtx, void *pvUser)
@@ -228,6 +248,10 @@ const GDBSTUBIF g_GdbStubIf =
     gdbStubIfTgtGetState,
     /** pfnTgtStop */
     gdbStubIfTgtStop,
+    /** pfnTgtRestart */
+    gdbStubIfTgtRestart,
+    /** pfnTgtKill */
+    gdbStubIfTgtKill,
     /** pfnTgtStep */
     gdbStubIfTgtStep,
     /** pfnTgtCont */
