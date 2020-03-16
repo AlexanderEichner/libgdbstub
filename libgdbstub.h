@@ -54,6 +54,10 @@ typedef GDBSTUBCTX *PGDBSTUBCTX;
 #define GDBSTUB_ERR_NOT_SUPPORTED      (-6)
 /** Error code - protocol error. */
 #define GDBSTUB_ERR_PROTOCOL_VIOLATION (-7)
+/** Error code - buffer would overflow. */
+#define GDBSTUB_ERR_BUFFER_OVERFLOW    (-8)
+/** Error code - not found. */
+#define GDBSTUB_ERR_NOT_FOUND          (-9)
 
 
 /**
@@ -166,6 +170,55 @@ typedef GDBSTUBREG *PGDBSTUBREG;
 typedef const GDBSTUBREG *PCGDBSTUBREG;
 
 
+/** Forward decleration of a const output helper structure. */
+typedef const struct GDBSTUBOUTHLP *PCGDBSTUBOUTHLP;
+
+/**
+ * Output helper callback table.
+ */
+typedef struct GDBSTUBOUTHLP
+{
+
+    /**
+     * Print formatted string.
+     *
+     * @returns Status code.
+     * @param   pHlp                Pointer to this structure.
+     * @param   pszFmt              The format string.
+     * @param   ...                 Variable number of arguments depending on the foramt string.
+     */
+    int (*pfnPrintf) (PCGDBSTUBOUTHLP pHlp, const char *pszFmt, ...);
+
+} GDBSTUBCMDOUTHLP;
+
+
+/**
+ * Custom command descriptor.
+ */
+typedef struct GDBSTUBCMD
+{
+    /** Command name. */
+    const char                  *pszCmd;
+    /** Command description, optional. */
+    const char                  *pszDesc;
+
+    /**
+     * Command callback.
+     *
+     * @returns Status code.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the command.
+     * @param   pHlp                Pointer to output formatting helpers.
+     * @param   pszArgs             Command arguments.
+     * @param   pvUser              Opaque user data passed during stub context creation.
+     */
+    int (*pfnCmd) (GDBSTUBCTX hGdbStubCtx, PCGDBSTUBOUTHLP pHlp, const char *pszArgs, void *pvUser);
+} GDBSTUBCMD;
+/** Pointer to a custom command descriptor. */
+typedef GDBSTUBCMD *PGDBSTUBCMD;
+/** Pointer to a const custom command descriptor. */
+typedef const GDBSTUBCMD *PCGDBSTUBCMD;
+
+
 /**
  * GDB stub interface callback table.
  */
@@ -176,6 +229,8 @@ typedef struct GDBSTUBIF
     /** Register entries for the target (the index will be used by the getter/setter callbacks),
      * ended by an entry with a NULL name and 0 register bit size. */
     PCGDBSTUBREG                paRegs;
+    /** Custom command descriptors, terminated by a NULL entry. */
+    PCGDBSTUBCMD                paCmds;
 
     /**
      * Allocate memory.

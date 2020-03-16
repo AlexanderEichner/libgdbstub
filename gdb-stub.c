@@ -24,6 +24,8 @@
  * SOFTWARE.
  */
 
+#include <stdarg.h>
+
 #include "libgdbstub.h"
 
 
@@ -42,6 +44,8 @@
 #define MIN(a_Val1, a_Val2) ((a_Val1) < (a_Val2) ? (a_Val1) : (a_Val2))
 /** Sets the specified bit. */
 #define BIT(a_Bit) (1 << (a_Bit))
+/** Return the absolute value of a given number .*/
+#define ABS(a) ((a) < 0 ? -(a) : (a))
 
 /** Our own bool type. */
 typedef uint8_t bool;
@@ -67,6 +71,24 @@ typedef enum GDBSTUBRECVSTATE
     /** Blow up the enum to 32bits for easier alignment of members in structs. */
     GDBSTUBRECVSTATE_32BIT_HACK = 0x7fffffff
 } GDBSTUBRECVSTATE;
+
+
+/**
+ * Command output context.
+ */
+typedef struct GDBSTUBOUTCTX
+{
+    /** The helper structure, MUST come first!. */
+    GDBSTUBCMDOUTHLP            Hlp;
+    /** Current offset into the scratch buffer. */
+    uint32_t                    offScratch;
+    /** Scratch buffer. */
+    uint8_t                     abScratch[512];
+} GDBSTUBOUTCTX;
+/** Pointer to a command output context. */
+typedef GDBSTUBOUTCTX *PGDBSTUBOUTCTX;
+/** Pointer to a const command output context. */
+typedef const GDBSTUBOUTCTX *PCGDBSTUBOUTCTX;
 
 
 /**
@@ -110,6 +132,8 @@ typedef struct GDBSTUBCTXINT
     size_t                      cbTgtXmlDesc;
     /** Flag whether the stub is in extended mode. */
     bool                        fExtendedMode;
+    /** Output context. */
+    GDBSTUBOUTCTX               OutCtx;
 } GDBSTUBCTXINT;
 /** Pointer to an internal PSP proxy context. */
 typedef GDBSTUBCTXINT *PGDBSTUBCTXINT;
@@ -495,6 +519,27 @@ static void *gdbStubCtxMemcpy(void *pvDst, const void *pvSrc, size_t cb)
 
 
 /**
+ * Internal memset.
+ *
+ * @returns Pointer to the destination buffer.
+ * @param   pvDst               Destination to copy the buffer to.
+ * @param   bVal                Byte value to set the buffer to.
+ * @param   cb                  Amount of bytes to set.
+ *
+ * @todo Allow using optimized variants of memset.
+ */
+static void *gdbStubCtxMemset(void *pvDst, uint8_t bVal, size_t cb)
+{
+    uint8_t *pbDst = (uint8_t *)pvDst;
+
+    while (cb--)
+        *pbDst++ = bVal;
+
+    return pvDst;
+}
+
+
+/**
  * Converts a given to the hexadecimal value if valid.
  *
  * @returns The hexadecimal value the given character represents 0-9,a-f,A-F or 0xff on error.
@@ -627,6 +672,375 @@ static size_t gdbStubStrlen(const char *psz)
     }
 
     return cchStr;
+}
+
+
+/**
+ * Compares two strings.
+ *
+ * @returns 0 if both strings are equal,
+ *          < 0 if psz1 is less than psz2,
+ *          > 0 if psz1 is less than psz2,
+ * @param   psz1                    Pointer to the first string.
+ * @param   psz2                    Pointer to the first string.
+ *
+ * @todo Allow using optimized variants of strcmp.
+ */
+static int gdbStubStrcmp(const char *psz1, const char *psz2)
+{
+    for (;;)
+    {
+        if (*psz1 < *psz2)
+            return -1;
+        if (*psz1 > *psz2)
+            return 1;
+
+        if (*psz1 == '\0' && *psz2 == '\0')
+            break;
+
+        psz1++;
+        psz2++;
+    }
+
+    return 0;
+}
+
+
+/**
+ * Appends a single character to the given outptu context.
+ *
+ * @returns nothing.
+ * @param   pThis      The output context instance.
+ * @param   ch         The character to append.
+ */
+static void gdbStubOutCtxAppendChar(PGDBSTUBOUTCTX pThis, const char ch)
+{
+    if (pThis->offScratch < sizeof(pThis->abScratch))
+    {
+        pThis->abScratch[pThis->offScratch] = ch;
+        pThis->offScratch++;
+    }
+}
+
+
+/**
+ * Converts a given unsigned 32bit integer into a string and appends it to the scratch buffer.
+ *
+ * @returns nothing.
+ * @param   pThis      The output context instance.
+ * @param   u32        The value to log.
+ * @param   cDigits    Minimum number of digits to log, if the number has fewer
+ *                     the gap is prepended with 0.
+ */
+static void gdbStubOutCtxAppendU32(PGDBSTUBOUTCTX pThis, uint32_t u32, uint32_t cDigits)
+{
+    char achDigits[] = "0123456789";
+    char aszBuf[32];
+    unsigned offBuf = 0;
+
+    /** @todo: Optimize. */
+
+    while (u32)
+    {
+        uint8_t u8Val = u32 % 10;
+        u32 /= 10;
+
+        aszBuf[offBuf++] = achDigits[u8Val];
+    }
+
+    /* Prepend 0. */
+    if (offBuf < cDigits)
+    {
+        while (cDigits - offBuf > 0)
+        {
+            gdbStubOutCtxAppendChar(pThis, '0');
+            cDigits--;
+        }
+    }
+
+    while (offBuf-- > 0)
+        gdbStubOutCtxAppendChar(pThis, aszBuf[offBuf]);
+}
+
+
+/**
+ * Converts a given unsigned 64bit integer into a string and appends it to the scratch buffer.
+ *
+ * @returns nothing.
+ * @param   pThis      The output context instance.
+ * @param   u64        The value to log.
+ * @param   cDigits    Minimum number of digits to log, if the number has fewer
+ *                     the gap is prepended with 0.
+ */
+static void gdbStubOutCtxAppendU64(PGDBSTUBOUTCTX pThis, uint64_t u64, uint32_t cDigits)
+{
+    char achDigits[] = "0123456789";
+    char aszBuf[32];
+    unsigned offBuf = 0;
+
+    /** @todo: Optimize. */
+
+    while (u64)
+    {
+        uint8_t u8Val = u64 % 10;
+        u64 /= 10;
+
+        aszBuf[offBuf++] = achDigits[u8Val];
+    }
+
+    /* Prepend 0. */
+    if (offBuf < cDigits)
+    {
+        while (cDigits - offBuf > 0)
+        {
+            gdbStubOutCtxAppendChar(pThis, '0');
+            cDigits--;
+        }
+    }
+
+    while (offBuf-- > 0)
+        gdbStubOutCtxAppendChar(pThis, aszBuf[offBuf]);
+}
+
+
+/**
+ * Converts a given unsigned 32bit integer into a string as hex and appends it to the scratch buffer.
+ *
+ * @returns nothing.
+ * @param   pThis      The output context instance.
+ * @param   u32        The value to log.
+ * @param   cDigits    Minimum number of digits to log, if the number has fewer
+ *                     the gap is prepended with 0.
+ */
+static void gdbStubOutCtxAppendHexU32(PGDBSTUBOUTCTX pThis, uint32_t u32, uint32_t cDigits)
+{
+    char achDigits[] = "0123456789abcdef";
+    char aszBuf[10];
+    unsigned offBuf = 0;
+
+    /** @todo: Optimize. */
+
+    while (u32)
+    {
+        uint8_t u8Val = u32 & 0xf;
+        u32 >>= 4;
+
+        aszBuf[offBuf++] = achDigits[u8Val];
+    }
+
+    /* Prepend 0. */
+    if (offBuf < cDigits)
+    {
+        while (cDigits - offBuf > 0)
+        {
+            gdbStubOutCtxAppendChar(pThis, '0');
+            cDigits--;
+        }
+    }
+
+    while (offBuf-- > 0)
+        gdbStubOutCtxAppendChar(pThis, aszBuf[offBuf]);
+}
+
+/**
+ * Converts a given unsigned 64bit integer into a string as hex and appends it to the scratch buffer.
+ *
+ * @returns nothing.
+ * @param   pThis      The output context instance.
+ * @param   u64        The value to log.
+ * @param   cDigits    Minimum number of digits to log, if the number has fewer
+ *                     the gap is prepended with 0.
+ */
+static void gdbStubOutCtxAppendHexU64(PGDBSTUBOUTCTX pThis, uint64_t u64, uint32_t cDigits)
+{
+    char achDigits[] = "0123456789abcdef";
+    char aszBuf[20];
+    unsigned offBuf = 0;
+
+    /** @todo: Optimize. */
+
+    while (u64)
+    {
+        uint8_t u8Val = u64 & 0xf;
+        u64 >>= 4;
+
+        aszBuf[offBuf++] = achDigits[u8Val];
+    }
+
+    /* Prepend 0. */
+    if (offBuf < cDigits)
+    {
+        while (cDigits - offBuf > 0)
+        {
+            gdbStubOutCtxAppendChar(pThis, '0');
+            cDigits--;
+        }
+    }
+
+    while (offBuf-- > 0)
+        gdbStubOutCtxAppendChar(pThis, aszBuf[offBuf]);
+}
+
+
+/**
+ * Converts a given signed 32bit integer into a string and appends it to the scratch buffer.
+ *
+ * @returns nothing.
+ * @param   pThis      The output context instance.
+ * @param   i32        The value to log.
+ * @param   cDigits    Minimum number of digits to log, if the number has fewer
+ *                     the gap is prepended with 0.
+ */
+static void gdbStubOutCtxAppendS32(PGDBSTUBOUTCTX pThis, int32_t i32, uint32_t cDigits)
+{
+    /* Add sign? */
+    if (i32 < 0)
+    {
+        gdbStubOutCtxAppendChar(pThis, '-');
+        i32 = ABS(i32);
+    }
+
+    /* Treat as unsigned from here on. */
+    gdbStubOutCtxAppendU32(pThis, (uint32_t)i32, cDigits);
+}
+
+
+/**
+ * Appends a given string to the logger instance.
+ *
+ * @returns nothing.
+ * @param   pThis      The output context instance.
+ * @param   psz        The string to append.
+ */
+static void gdbStubOutCtxAppendString(PGDBSTUBOUTCTX pThis, const char *psz)
+{
+    /** @todo: Optimize */
+    if (!psz)
+    {
+        gdbStubOutCtxAppendString(pThis, "<null>");
+        return;
+    }
+
+    while (*psz)
+        gdbStubOutCtxAppendChar(pThis, *psz++);
+}
+
+
+/**
+ * @copydoc{GDBSTUBOUTHLP,pfnPrintf}
+ */
+static int gdbStubOutCtxPrintf(PCGDBSTUBOUTHLP pHlp, const char *pszFmt, ...)
+{
+    int rc = GDBSTUB_INF_SUCCESS;
+    PGDBSTUBOUTCTX pThis = (PGDBSTUBOUTCTX)pHlp;
+    va_list hArgs;
+    va_start(hArgs, pszFmt);
+
+    while (*pszFmt)
+    {
+        char ch = *pszFmt++;
+
+        switch (ch)
+        {
+            case '%':
+            {
+                /* Format specifier. */
+                char chFmt = *pszFmt;
+                pszFmt++;
+
+                if (chFmt == '#')
+                {
+                    gdbStubOutCtxAppendString(pThis, "0x");
+                    chFmt = *pszFmt++;
+                }
+
+                switch (chFmt)
+                {
+                    case '%':
+                    {
+                        gdbStubOutCtxAppendChar(pThis, '%');
+                        break;
+                    }
+                    case 'u':
+                    {
+                        uint32_t u32 = va_arg(hArgs, uint32_t);
+                        gdbStubOutCtxAppendU32(pThis, u32, 1);
+                        break;
+                    }
+                    case 'd':
+                    {
+                        int32_t i32 = va_arg(hArgs, int32_t);
+                        gdbStubOutCtxAppendS32(pThis, i32, 1);
+                        break;
+                    }
+                    case 's':
+                    {
+                        const char *psz = va_arg(hArgs, const char *);
+                        gdbStubOutCtxAppendString(pThis, psz);
+                        break;
+                    }
+                    case 'x':
+                    {
+                        uint32_t u32 = va_arg(hArgs, uint32_t);
+                        gdbStubOutCtxAppendHexU32(pThis, u32, 1);
+                        break;
+                    }
+                    case 'X':
+                    {
+                        uint64_t u64 = va_arg(hArgs, uint64_t);
+                        gdbStubOutCtxAppendHexU64(pThis, u64, 1);
+                        break;
+                    }
+                    case 'p': /** @todo: Works only on 32bit... */
+                    {
+                        void *pv = va_arg(hArgs, void *);
+                        gdbStubOutCtxAppendString(pThis, "0x");
+                        if (sizeof(void *) == 4)
+                            gdbStubOutCtxAppendHexU32(pThis, (uint32_t)(uintptr_t)pv, 0);
+                        else if (sizeof(void *) == 8)
+                            gdbStubOutCtxAppendHexU64(pThis, (uint64_t)(uintptr_t)pv, 0);
+                        else
+                            gdbStubOutCtxAppendString(pThis, "<Unrecognised pointer width>");
+                    }
+                    default:
+                        /** @todo: Ignore or assert? */
+                        ;
+                }
+                break;
+            }
+            default:
+                gdbStubOutCtxAppendChar(pThis, ch);
+        }
+    }
+
+    va_end(hArgs);
+    return rc;
+}
+
+
+/**
+ * Resets the given output context.
+ *
+ * @returns nothing.
+ * @param   pThis               The output context instance.
+ */
+static void gdbStubOutCtxReset(PGDBSTUBOUTCTX pThis)
+{
+    pThis->offScratch = 0;
+    gdbStubCtxMemset(&pThis->abScratch[0], 0, sizeof(pThis->abScratch));
+}
+
+
+/**
+ * Initializes the given output context.
+ *
+ * @returns nothing.
+ * @param   pThis               The output context instance.
+ */
+static void gdbStubOutCtxInit(PGDBSTUBOUTCTX pThis)
+{
+    pThis->Hlp.pfnPrintf = gdbStubOutCtxPrintf;
+    gdbStubOutCtxReset(pThis);
 }
 
 
@@ -1378,6 +1792,115 @@ static int gdbStubCtxPktProcessQueryXferFeatRead(PGDBSTUBCTXINT pThis, const uin
 
 
 /**
+ * Calls the given command handler and processes the reply.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pCmd                The command to call.
+ * @param   pszArgs             Argument string to call the command with.
+ */
+static int gdbStubCtxCmdProcess(PGDBSTUBCTXINT pThis, PCGDBSTUBCMD pCmd, const char *pszArgs)
+{
+    int rc = GDBSTUB_INF_SUCCESS;
+
+    int rcCmd = pCmd->pfnCmd(pThis, &pThis->OutCtx.Hlp, pszArgs, pThis->pvUser);
+    if (rcCmd == GDBSTUB_INF_SUCCESS)
+    {
+        if (!pThis->OutCtx.offScratch) /* No output, just send OK reply. */
+            rc = gdbStubCtxReplySendOk(pThis);
+        else
+        {
+            rc = gdbStubCtxEnsurePktBufSpace(pThis, pThis->OutCtx.offScratch * 2);
+            if (rc == GDBSTUB_INF_SUCCESS)
+            {
+                uint8_t *pbPktBuf = pThis->pbPktBuf;
+                size_t cbPktBuf = pThis->OutCtx.offScratch * 2;
+
+                rc = gdbStubCtxEncodeBinaryAsHex(pbPktBuf, cbPktBuf, &pThis->OutCtx.abScratch[0], pThis->OutCtx.offScratch);
+                if (rc == GDBSTUB_INF_SUCCESS)
+                    rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbPktBuf);
+                else
+                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
+            }
+            else
+                rc = gdbStubCtxReplySendErrSts(pThis, rc);
+        }
+    }
+    else
+        rc = gdbStubCtxReplySendErrSts(pThis, rcCmd);
+
+    return rc;
+}
+
+
+/**
+ * Processes the 'Rcmd' query.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbArgs              Pointer to the start of the arguments in the packet.
+ * @param   cbArgs              Size of arguments in bytes.
+ */
+static int gdbStubCtxPktProcessQueryRcmd(PGDBSTUBCTXINT pThis, const uint8_t *pbArgs, size_t cbArgs)
+{
+    int rc = GDBSTUB_INF_SUCCESS;
+
+    /* Skip the , following the qRcmd start. */
+    if (   cbArgs < 1
+        || pbArgs[0] != ',')
+        return GDBSTUB_ERR_PROTOCOL_VIOLATION;
+
+    if (!pThis->pIf->paCmds)
+        return GDBSTUB_ERR_NOT_FOUND;
+
+    cbArgs--;
+    pbArgs++;
+
+    /* Decode the command. */
+    /** @todo Make this dynamic. */
+    char szCmd[4096];
+    if (cbArgs / 2 >= sizeof(szCmd))
+        return GDBSTUB_ERR_BUFFER_OVERFLOW;
+
+    size_t cbDecoded = 0;
+    rc = gdbStubCtxParseHexStringAsByteBuf(pbArgs, cbArgs - 1, &szCmd[0], sizeof(szCmd), &cbDecoded);
+    if (rc == GDBSTUB_INF_SUCCESS)
+    {
+        const char *pszArgs = NULL;
+        szCmd[cbDecoded] = '\0'; /* Ensure zero termination. */
+
+        /** @todo Sanitize string. */
+
+        /* Look for the first space and take that as the separator between command identifier. */
+        uint8_t *pbDelim = gdbStubCtxMemchr(&szCmd[0], ' ', cbDecoded);
+        if (pbDelim)
+        {
+            *pbDelim = '\0';
+            pszArgs = pbDelim + 1;
+        }
+
+        /* Search for the command. */
+        PCGDBSTUBCMD pCmd = &pThis->pIf->paCmds[0];
+        rc = GDBSTUB_ERR_NOT_FOUND;
+        while (pCmd->pszCmd)
+        {
+            if (!gdbStubStrcmp(pCmd->pszCmd, &szCmd[0]))
+            {
+                rc = gdbStubCtxCmdProcess(pThis, pCmd, pszArgs);
+                break;
+            }
+            pCmd++;
+        }
+
+        if (rc == GDBSTUB_ERR_NOT_FOUND)
+            rc = gdbStubCtxReplySendErrSts(pThis, rc); /** @todo Send string. */
+    }
+
+    return rc;
+}
+
+
+/**
  * List of supported query packets.
  */
 static const GDBSTUBQPKTPROC g_aQPktProcs[] =
@@ -1385,7 +1908,8 @@ static const GDBSTUBQPKTPROC g_aQPktProcs[] =
 #define GDBSTUBQPKTPROC_INIT(a_Name, a_pfnProc) { a_Name, sizeof(a_Name) - 1, a_pfnProc }
     GDBSTUBQPKTPROC_INIT("TStatus",            gdbStubCtxPktProcessQueryTStatus),
     GDBSTUBQPKTPROC_INIT("Supported",          gdbStubCtxPktProcessQuerySupported),
-    GDBSTUBQPKTPROC_INIT("Xfer:features:read", gdbStubCtxPktProcessQueryXferFeatRead)
+    GDBSTUBQPKTPROC_INIT("Xfer:features:read", gdbStubCtxPktProcessQueryXferFeatRead),
+    GDBSTUBQPKTPROC_INIT("Rcmd",               gdbStubCtxPktProcessQueryRcmd),
 #undef GDBSTUBQPKTPROC_INIT
 };
 
@@ -2113,6 +2637,7 @@ int GDBStubCtxCreate(PGDBSTUBCTX phCtx, PCGDBSTUBIOIF pIoIf, PCGDBSTUBIF pIf, vo
         pThis->pbTgtXmlDesc    = NULL;
         pThis->cbTgtXmlDesc    = 0;
         pThis->fExtendedMode   = false;
+        gdbStubOutCtxInit(&pThis->OutCtx);
 
         uint32_t cRegs = 0;
         size_t cbRegs = 0;

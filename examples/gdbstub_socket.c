@@ -81,6 +81,26 @@ static const GDBSTUBREG g_aGdbStubRegs[] =
 
 
 /**
+ * @copydoc{GDBSTUBCMD,pfnCmd}
+ */
+static int gdbStubCmdHelp(GDBSTUBCTX hGdbStubCtx, PCGDBSTUBOUTHLP pHlp, const char *pszArgs, void *pvUser)
+{
+    pHlp->pfnPrintf(pHlp, "Test: %s %p %#x\n", "help", pHlp, 0xdeadbeef);
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
+ * Custom commands descriptors.
+ */
+static const GDBSTUBCMD g_aGdbCmds[] =
+{
+    { "help", "Print help about supported commands", gdbStubCmdHelp },
+    { NULL,   NULL,                                  NULL           }
+};
+
+
+/**
  * @copydoc{GDBSTUBIF,pfnMemAlloc}
  */
 static void *gdbStubIfMemAlloc(GDBSTUBCTX hGdbStubCtx, void *pvUser, size_t cb)
@@ -240,6 +260,8 @@ const GDBSTUBIF g_GdbStubIf =
     GDBSTUBTGTARCH_ARM,
     /** paRegs */
     &g_aGdbStubRegs[0],
+    /** paCmds */
+    &g_aGdbCmds[0],
     /** pfnMemAlloc */
     gdbStubIfMemAlloc,
     /** pfnMemFree */
