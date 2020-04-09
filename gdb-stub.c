@@ -1803,6 +1803,7 @@ static int gdbStubCtxCmdProcess(PGDBSTUBCTXINT pThis, PCGDBSTUBCMD pCmd, const c
 {
     int rc = GDBSTUB_INF_SUCCESS;
 
+    gdbStubOutCtxReset(&pThis->OutCtx);
     int rcCmd = pCmd->pfnCmd(pThis, &pThis->OutCtx.Hlp, pszArgs, pThis->pvUser);
     if (rcCmd == GDBSTUB_INF_SUCCESS)
     {
