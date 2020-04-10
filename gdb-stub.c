@@ -1868,6 +1868,8 @@ static int gdbStubCtxPktProcessQueryRcmd(PGDBSTUBCTXINT pThis, const uint8_t *pb
     if (rc == GDBSTUB_INF_SUCCESS)
     {
         const char *pszArgs = NULL;
+
+        cbDecoded /= 2;
         szCmd[cbDecoded] = '\0'; /* Ensure zero termination. */
 
         /** @todo Sanitize string. */
