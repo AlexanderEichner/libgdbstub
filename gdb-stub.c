@@ -1885,7 +1885,8 @@ static int gdbStubCtxPktProcessQueryXferFeatRead(PGDBSTUBCTXINT pThis, const uin
  *
  * @returns Status code.
  * @param   pThis               The GDB stub context.
- * @param   pCmd                The command to call.
+ * @param   pCmd                The command to call - NULL if using the generic monitor command received callback in the
+ *                              interface callback table.
  * @param   pszArgs             Argument string to call the command with.
  */
 static int gdbStubCtxCmdProcess(PGDBSTUBCTXINT pThis, PCGDBSTUBCMD pCmd, const char *pszArgs)
@@ -1894,7 +1895,11 @@ static int gdbStubCtxCmdProcess(PGDBSTUBCTXINT pThis, PCGDBSTUBCMD pCmd, const c
     if (rc == GDBSTUB_INF_SUCCESS)
     {
         gdbStubOutCtxReset(&pThis->OutCtx);
-        int rcCmd = pCmd->pfnCmd(pThis, &pThis->OutCtx.Hlp, pszArgs, pThis->pvUser);
+        int rcCmd = GDBSTUB_INF_SUCCESS;
+        if (pCmd)
+            rcCmd = pCmd->pfnCmd(pThis, &pThis->OutCtx.Hlp, pszArgs, pThis->pvUser);
+        else
+            rcCmd = pThis->pIf->pfnMonCmd(pThis, &pThis->OutCtx.Hlp, pszArgs, pThis->pvUser);
         if (rcCmd == GDBSTUB_INF_SUCCESS)
         {
             if (!pThis->OutCtx.offScratch) /* No output, just send OK reply. */
@@ -1974,7 +1979,14 @@ static int gdbStubCtxPktProcessQueryRcmd(PGDBSTUBCTXINT pThis, const uint8_t *pb
             pCmd++;
         }
 
-        if (rc == GDBSTUB_ERR_NOT_FOUND)
+        if (   rc == GDBSTUB_ERR_NOT_FOUND
+            && pThis->pIf->pfnMonCmd)
+        {
+            /* Restore delimiter. */
+            *pbDelim = ' ';
+            rc = gdbStubCtxCmdProcess(pThis, NULL, &szCmd[0]);
+        }
+        else
             rc = gdbStubCtxReplySendErrSts(pThis, rc); /** @todo Send string. */
     }
 

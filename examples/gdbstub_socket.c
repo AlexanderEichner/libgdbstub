@@ -252,6 +252,17 @@ static int gdbStubIfTgtTpClear(GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMAD
 
 
 /**
+ * @copydoc{GDBSTUBIF,pfnMonCmd}
+ */
+static int gdbStubIfMonCmd(GDBSTUBCTX hGdbStubCtx, PCGDBSTUBOUTHLP pHlp, const char *pszCmd, void *pvUser)
+{
+    printf("gdbStubIfMonCmd: hGdbStubCtx=%p pHlp=%p pszCmd=%p{%s} pvUser=%p\n",
+           hGdbStubCtx, pHlp, pszCmd, pszCmd, pvUser);
+    return GDBSTUB_INF_SUCCESS;
+}
+
+
+/**
  * GDB stub interface callback table.
  */
 const GDBSTUBIF g_GdbStubIf =
@@ -289,7 +300,9 @@ const GDBSTUBIF g_GdbStubIf =
     /** pfnTgtTpSet */
     gdbStubIfTgtTpSet,
     /** pfnTgtTpClear */
-    gdbStubIfTgtTpClear
+    gdbStubIfTgtTpClear,
+    /** pfnMonCmd */
+    gdbStubIfMonCmd
 };
 
 

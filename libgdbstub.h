@@ -379,6 +379,21 @@ typedef struct GDBSTUBIF
      */
     int    (*pfnTgtTpClear) (GDBSTUBCTX hGdbStubCtx, void *pvUser, GDBTGTMEMADDR GdbTgtTpAddr);
 
+    /**
+     * Monitor command received callback - optional.
+     *
+     * @returns Status code.
+     * @param   hGdbStubCtx         The GDB stub context handle invoking the command.
+     * @param   pHlp                Pointer to output formatting helpers.
+     * @param   pszCmd              Command including arguments.
+     * @param   pvUser              Opaque user data passed during stub context creation.
+     *
+     * @note Optional callback which is called if no matching command was found in GDBSTUBIF::paCmds.
+     *       This is primarily used for environments where certain command handlers can be registered/deregistered on the
+     *       fly while the stub context is used.
+     */
+    int (*pfnMonCmd) (GDBSTUBCTX hGdbStubCtx, PCGDBSTUBOUTHLP pHlp, const char *pszCmd, void *pvUser);
+
 } GDBSTUBIF;
 /** Pointer to a interface callback table. */
 typedef GDBSTUBIF *PGDBSTUBIF;
