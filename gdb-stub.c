@@ -55,6 +55,9 @@ typedef uint8_t bool;
 #define false 0
 
 
+/** Pointer to an internal PSP proxy context. */
+typedef struct GDBSTUBCTXINT *PGDBSTUBCTXINT;
+
 /**
  * GDB stub receive state.
  */
@@ -80,6 +83,8 @@ typedef struct GDBSTUBOUTCTX
 {
     /** The helper structure, MUST come first!. */
     GDBSTUBCMDOUTHLP            Hlp;
+    /** Pointer to the owning GDB stub context. */
+    PGDBSTUBCTXINT              pGdbStubCtx;
     /** Current offset into the scratch buffer. */
     uint32_t                    offScratch;
     /** Scratch buffer. */
@@ -124,6 +129,8 @@ typedef struct GDBSTUBCTXINT
     void                        *pvRegsScratch;
     /** Register index array for querying setting. */
     uint32_t                    *paidxRegs;
+    /** Send packet checksum. */
+    uint8_t                     uChkSumSend;
     /** Feature flags supported we negotiated with the remote end. */
     uint32_t                    fFeatures;
     /** Pointer to the XML target description. */
@@ -135,8 +142,7 @@ typedef struct GDBSTUBCTXINT
     /** Output context. */
     GDBSTUBOUTCTX               OutCtx;
 } GDBSTUBCTXINT;
-/** Pointer to an internal PSP proxy context. */
-typedef GDBSTUBCTXINT *PGDBSTUBCTXINT;
+
 
 /** Indicate support for the 'qXfer:features:read' packet to support the target description. */
 #define GDBSTUBCTX_FEATURES_F_TGT_DESC      BIT(0)
@@ -707,7 +713,58 @@ static int gdbStubStrcmp(const char *psz1, const char *psz2)
 
 
 /**
- * Appends a single character to the given outptu context.
+ * Starts transmission of a new reply packet.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static int gdbStubCtxReplySendBegin(PGDBSTUBCTXINT pThis)
+{
+    pThis->uChkSumSend = 0;
+
+    uint8_t chPktStart = GDBSTUB_PKT_START;
+    return gdbStubCtxIoIfWrite(pThis, &chPktStart, sizeof(chPktStart));
+}
+
+
+/**
+ * Sends the given data in the reply.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   pbReplyData         The reply data to send.
+ * @param   cbReplyData         Size of the reply data in bytes.
+ */
+static int gdbStubCtxReplySendData(PGDBSTUBCTXINT pThis, const uint8_t *pbReplyData, size_t cbReplyData)
+{
+    /* Update checksum. */
+    for (uint32_t i = 0; i < cbReplyData; i++)
+        pThis->uChkSumSend += pbReplyData[i];
+
+    return gdbStubCtxIoIfWrite(pThis, pbReplyData, cbReplyData);
+}
+
+
+/**
+ * Finishes transmission of the current reply by sending the packet end character and the checksum.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static int gdbStubCtxReplySendEnd(PGDBSTUBCTXINT pThis)
+{
+    uint8_t achPktEnd[3];
+
+    achPktEnd[0] = GDBSTUB_PKT_END;
+    achPktEnd[1] = gdbStubCtxHexToChr(pThis->uChkSumSend >> 4);
+    achPktEnd[2] = gdbStubCtxHexToChr(pThis->uChkSumSend & 0xf);
+
+    return gdbStubCtxIoIfWrite(pThis, &achPktEnd[0], sizeof(achPktEnd));
+}
+
+
+/**
+ * Appends a single character to the given output context.
  *
  * @returns nothing.
  * @param   pThis      The output context instance.
@@ -715,11 +772,14 @@ static int gdbStubStrcmp(const char *psz1, const char *psz2)
  */
 static void gdbStubOutCtxAppendChar(PGDBSTUBOUTCTX pThis, const char ch)
 {
-    if (pThis->offScratch < sizeof(pThis->abScratch))
+    if (pThis->offScratch + 2 > sizeof(pThis->abScratch))
     {
-        pThis->abScratch[pThis->offScratch] = ch;
-        pThis->offScratch++;
+        gdbStubCtxReplySendData(pThis->pGdbStubCtx, &pThis->abScratch[0], pThis->offScratch);
+        pThis->offScratch = 0;
     }
+
+    pThis->abScratch[pThis->offScratch++] = gdbStubCtxHexToChr(ch >> 4);
+    pThis->abScratch[pThis->offScratch++] = gdbStubCtxHexToChr(ch & 0xf);
 }
 
 
@@ -1036,10 +1096,12 @@ static void gdbStubOutCtxReset(PGDBSTUBOUTCTX pThis)
  *
  * @returns nothing.
  * @param   pThis               The output context instance.
+ * @param   pGdbStubCtx         The GDB stub context.
  */
-static void gdbStubOutCtxInit(PGDBSTUBOUTCTX pThis)
+static void gdbStubOutCtxInit(PGDBSTUBOUTCTX pThis, PGDBSTUBCTXINT pGdbStubCtx)
 {
     pThis->Hlp.pfnPrintf = gdbStubOutCtxPrintf;
+    pThis->pGdbStubCtx   = pGdbStubCtx;
     gdbStubOutCtxReset(pThis);
 }
 
@@ -1170,7 +1232,7 @@ static int gdbStubCtxEnsurePktBufSpace(PGDBSTUBCTXINT pThis, size_t cbSpace)
 
 
 /**
- * Sends the given reply packet, doing the framing, checksumming, etc.
+ * Sends the given reply packet, doing the framing, checksumming, etc. in one call.
  *
  * @returns Status code.
  * @param   pThis               The GDB stub context.
@@ -1179,32 +1241,28 @@ static int gdbStubCtxEnsurePktBufSpace(PGDBSTUBCTXINT pThis, size_t cbSpace)
  */
 static int gdbStubCtxReplySend(PGDBSTUBCTXINT pThis, const uint8_t *pbReplyPkt, size_t cbReplyPkt)
 {
-    uint8_t chPktStart = GDBSTUB_PKT_START;
-    int rc = gdbStubCtxIoIfWrite(pThis, &chPktStart, sizeof(chPktStart));
+    int rc = gdbStubCtxReplySendBegin(pThis);
     if (rc == GDBSTUB_INF_SUCCESS)
     {
-        uint8_t uChkSum = 0;
-        for (uint32_t i = 0; i < cbReplyPkt; i++)
-            uChkSum += pbReplyPkt[i];
-
-        if (cbReplyPkt)
-            rc = gdbStubCtxIoIfWrite(pThis, pbReplyPkt, cbReplyPkt);
+        rc = gdbStubCtxReplySendData(pThis, pbReplyPkt, cbReplyPkt);
         if (rc == GDBSTUB_INF_SUCCESS)
-        {
-            uint8_t chPktEnd = GDBSTUB_PKT_END;
-            rc = gdbStubCtxIoIfWrite(pThis, &chPktEnd, sizeof(chPktEnd));
-            if (rc == GDBSTUB_INF_SUCCESS)
-            {
-                uint8_t achChkSum[2];
-
-                achChkSum[0] = gdbStubCtxHexToChr(uChkSum >> 4);
-                achChkSum[1] = gdbStubCtxHexToChr(uChkSum & 0xf);
-                rc = gdbStubCtxIoIfWrite(pThis, &achChkSum[0], sizeof(achChkSum));
-            }
-        }
+            rc = gdbStubCtxReplySendEnd(pThis);
     }
 
     return rc;
+}
+
+
+/**
+ * Sends a 'OK' part of a reply packet only (packet start and end needs to be handled separately).
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ */
+static int gdbStubCtxReplySendOkData(PGDBSTUBCTXINT pThis)
+{
+    char achOk[2] = { 'O', 'K' };
+    return gdbStubCtxReplySendData(pThis, &achOk[0], sizeof(achOk));
 }
 
 
@@ -1218,6 +1276,22 @@ static int gdbStubCtxReplySendOk(PGDBSTUBCTXINT pThis)
 {
     char achOk[2] = { 'O', 'K' };
     return gdbStubCtxReplySend(pThis, &achOk[0], sizeof(achOk));
+}
+
+
+/**
+ * Sends a 'E NN' part of a reply packet only (packet start and end needs to be handled separately).
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   uErr                The error code to send.
+ */
+static int gdbStubCtxReplySendErrData(PGDBSTUBCTXINT pThis, uint8_t uErr)
+{
+    char achErr[3] = { 'E', 0, 0 };
+    achErr[1] = gdbStubCtxHexToChr(uErr >> 4);
+    achErr[2] = gdbStubCtxHexToChr(uErr & 0xf);
+    return gdbStubCtxReplySendData(pThis, &achErr[0], sizeof(achErr));
 }
 
 
@@ -1247,6 +1321,21 @@ static int gdbStubCtxReplySendSigTrap(PGDBSTUBCTXINT pThis)
 {
     uint8_t achSigTrap[3] = { 'S', '0', '5' };
     return gdbStubCtxReplySend(pThis, &achSigTrap[0], sizeof(achSigTrap));
+}
+
+
+/**
+ * Sends a GDB stub status code indicating an error using the error reply packet,
+ * data part only, packet start and and end needs to be handled separately.
+ *
+ * @returns Status code.
+ * @param   pThis               The GDB stub context.
+ * @param   rc                  The status code to send.
+ */
+static int gdbStubCtxReplySendErrStsData(PGDBSTUBCTXINT pThis, int rc)
+{
+    /** Todo convert error codes maybe. */
+    return gdbStubCtxReplySendErrData(pThis, (-rc) & 0xff);
 }
 
 
@@ -1801,34 +1890,24 @@ static int gdbStubCtxPktProcessQueryXferFeatRead(PGDBSTUBCTXINT pThis, const uin
  */
 static int gdbStubCtxCmdProcess(PGDBSTUBCTXINT pThis, PCGDBSTUBCMD pCmd, const char *pszArgs)
 {
-    int rc = GDBSTUB_INF_SUCCESS;
-
-    gdbStubOutCtxReset(&pThis->OutCtx);
-    int rcCmd = pCmd->pfnCmd(pThis, &pThis->OutCtx.Hlp, pszArgs, pThis->pvUser);
-    if (rcCmd == GDBSTUB_INF_SUCCESS)
+    int rc = gdbStubCtxReplySendBegin(pThis);
+    if (rc == GDBSTUB_INF_SUCCESS)
     {
-        if (!pThis->OutCtx.offScratch) /* No output, just send OK reply. */
-            rc = gdbStubCtxReplySendOk(pThis);
-        else
+        gdbStubOutCtxReset(&pThis->OutCtx);
+        int rcCmd = pCmd->pfnCmd(pThis, &pThis->OutCtx.Hlp, pszArgs, pThis->pvUser);
+        if (rcCmd == GDBSTUB_INF_SUCCESS)
         {
-            rc = gdbStubCtxEnsurePktBufSpace(pThis, pThis->OutCtx.offScratch * 2);
-            if (rc == GDBSTUB_INF_SUCCESS)
-            {
-                uint8_t *pbPktBuf = pThis->pbPktBuf;
-                size_t cbPktBuf = pThis->OutCtx.offScratch * 2;
-
-                rc = gdbStubCtxEncodeBinaryAsHex(pbPktBuf, cbPktBuf, &pThis->OutCtx.abScratch[0], pThis->OutCtx.offScratch);
-                if (rc == GDBSTUB_INF_SUCCESS)
-                    rc = gdbStubCtxReplySend(pThis, pThis->pbPktBuf, cbPktBuf);
-                else
-                    rc = gdbStubCtxReplySendErrSts(pThis, rc);
-            }
+            if (!pThis->OutCtx.offScratch) /* No output, just send OK reply. */
+                rc = gdbStubCtxReplySendOkData(pThis);
             else
-                rc = gdbStubCtxReplySendErrSts(pThis, rc);
+                rc = gdbStubCtxReplySendData(pThis, &pThis->OutCtx.abScratch[0], pThis->OutCtx.offScratch);
+
+            /* Try to finish the reply in case of an error anyway (but we might be completely screwed at this point anyway). */
+            gdbStubCtxReplySendEnd(pThis);
         }
+        else
+            rc = gdbStubCtxReplySendErrStsData(pThis, rcCmd);
     }
-    else
-        rc = gdbStubCtxReplySendErrSts(pThis, rcCmd);
 
     return rc;
 }
@@ -2640,7 +2719,7 @@ int GDBStubCtxCreate(PGDBSTUBCTX phCtx, PCGDBSTUBIOIF pIoIf, PCGDBSTUBIF pIf, vo
         pThis->pbTgtXmlDesc    = NULL;
         pThis->cbTgtXmlDesc    = 0;
         pThis->fExtendedMode   = false;
-        gdbStubOutCtxInit(&pThis->OutCtx);
+        gdbStubOutCtxInit(&pThis->OutCtx, pThis);
 
         uint32_t cRegs = 0;
         size_t cbRegs = 0;
