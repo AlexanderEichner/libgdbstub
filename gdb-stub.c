@@ -1983,7 +1983,8 @@ static int gdbStubCtxPktProcessQueryRcmd(PGDBSTUBCTXINT pThis, const uint8_t *pb
             && pThis->pIf->pfnMonCmd)
         {
             /* Restore delimiter. */
-            *pbDelim = ' ';
+            if (pbDelim)
+                *pbDelim = ' ';
             rc = gdbStubCtxCmdProcess(pThis, NULL, &szCmd[0]);
         }
         else
